@@ -76,9 +76,11 @@ class SyncSummary:
         if self.deferred:
             parts.append(f"{self.deferred} left for next run")
         if self.removals_queued:
-            parts.append(f"{len(self.removals_queued)} removals need your OK")
+            n = len(self.removals_queued)
+            parts.append(f"{n} removal{'s' if n != 1 else ''} need{'s' if n == 1 else ''} your OK")
         if self.library_new:
-            parts.append(f"{len(self.library_new)} new library items")
+            n = len(self.library_new)
+            parts.append(f"{n} new library item{'s' if n != 1 else ''}")
         if self.errors:
             parts.append(f"{len(self.errors)} errors")
         return ", ".join(parts) or "No changes"
