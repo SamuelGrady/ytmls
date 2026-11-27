@@ -163,3 +163,62 @@ def test_password_change_revokes_other_sessions(authed, app):
     assert r.status_code == 303
     assert other.get("/", follow_redirects=False).status_code == 303
     assert authed.get("/", follow_redirects=False).status_code == 200
+
+
+# ---------------------------------------------------------------- cookie/origin regressions
+
+
+def _app_with(tmp_path, **over):
+    from dataclasses import replace
+
+    from app.config import load_settings
+    from app.main import create_app
+    from fastapi.testclient import TestClient
+    from .conftest import FakeYTM
+    s = replace(load_settings(), data_dir=tmp_path / "d", music_dir=tmp_path / "m", **over)
+    app = create_app(s, ytm_factory=FakeYTM)
+    return app, TestClient(app, base_url="http://192.168.1.50:8080")
+
+
+def test_auto_secure_works_over_plain_http_lan(tmp_path):
+    app, client = _app_with(tmp_path, cookie_secure=None)
+    r = client.get("/setup")
+    assert "secure" not in r.headers["set-cookie"].lower()
+    pre = pre_token(client, "/setup")
+    r = client.post("/setup", data={"pre": pre, "setup_token": app.state.setup_token, "username": "admin",
+                                    "password": PASSWORD, "confirm": PASSWORD},
+                    headers={"Origin": "http://192.168.1.50:8080"}, follow_redirects=False)
+    assert r.status_code == 303
+
+
+def test_auto_secure_sets_flag_behind_https_tunnel(tmp_path):
+    app, client = _app_with(tmp_path, cookie_secure=None)
+    r = client.get("/setup", headers={"X-Forwarded-Proto": "https"})
+    assert "secure" in r.headers["set-cookie"].lower()
+    assert "strict-transport-security" in r.headers
+
+
+def test_forced_secure_over_http_explains_itself(tmp_path):
+    app, client = _app_with(tmp_path, cookie_secure=True)
+    client.get("/setup")  # browser would drop the Secure cookie on http
+    client.cookies.clear()
+    r = client.post("/setup", data={"pre": "x", "setup_token": "x"})
+    assert r.status_code == 403
+    assert "YTMLS_COOKIE_SECURE" in r.text
+
+
+def test_tunnel_origin_accepted_via_forwarded_host_or_public_url(tmp_path):
+    app, client = _app_with(tmp_path, cookie_secure=None, public_url="https://music.example.com")
+    pre = pre_token(client, "/setup")
+    # Proxy rewrote Host to the container address; Origin is the public hostname.
+    r = client.post("/setup", data={"pre": pre, "setup_token": app.state.setup_token, "username": "admin",
+                                    "password": PASSWORD, "confirm": PASSWORD},
+                    headers={"Origin": "https://music.example.com", "Host": "ytmls:8080"}, follow_redirects=False)
+    assert r.status_code == 303
+
+
+def test_unknown_origin_still_rejected_with_explanation(tmp_path):
+    app, client = _app_with(tmp_path, cookie_secure=None)
+    pre = pre_token(client, "/setup")
+    r = client.post("/setup", data={"pre": pre, "setup_token": "x"}, headers={"Origin": "https://evil.example"})
+    assert r.status_code == 403 and "YTMLS_PUBLIC_URL" in r.text

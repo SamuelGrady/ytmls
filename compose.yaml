@@ -7,9 +7,13 @@ services:
     # Match this to the user/group that owns your Jellyfin music folder.
     user: "1000:1000"
     environment:
-      # The app is served over HTTPS by Cloudflare Tunnel, so cookies are Secure.
-      # Set to "false" only for plain-http testing on localhost.
-      YTMLS_COOKIE_SECURE: "true"
+      # "auto": cookies get the Secure flag whenever the request came in over
+      # HTTPS (the tunnel), so plain-http LAN access keeps working too.
+      # Set to "true" to refuse to work over plain http at all.
+      YTMLS_COOKIE_SECURE: "auto"
+      # Your tunnel address. Lets form posts through the tunnel pass the
+      # same-site check even if the proxy rewrites the Host header.
+      # YTMLS_PUBLIC_URL: https://music.example.com
       # Safe only when the app is reachable solely through the tunnel
       # (no published port, or one bound to 127.0.0.1 as below).
       YTMLS_TRUST_PROXY_HEADERS: "true"
