@@ -78,3 +78,19 @@ details summary { cursor: pointer; font-weight: 600; margin: .5rem 0; }
 .events li { padding: .5rem 0; border-bottom: 1px solid var(--border); }
 .events time { display: inline-block; min-width: 9.5rem; }
 .qr svg { display: block; max-width: 220px; height: auto; border-radius: 8px; }
+
+.actions { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+.statusbar { padding: .75rem 1rem; font-size: .9rem; }
+.count { display: inline-block; min-width: 1.3em; padding: 0 .35em; border-radius: 999px; background: var(--accent);
+  color: var(--accent-text); font-size: .75rem; text-align: center; font-weight: 600; }
+select { font: inherit; color: inherit; padding: .5rem; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+label.checkbox { display: flex; gap: .5rem; align-items: flex-start; }
+label.checkbox input { margin-top: .25rem; }
+.check-all { display: flex; flex-direction: row; gap: .5rem; align-items: center; }
+.item-row code { margin-top: .2rem; justify-self: start; }
+.spaced { margin-top: 2rem; }
+table.tracks { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+table.tracks th, table.tracks td { text-align: left; padding: .55rem .75rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+table.tracks th { font-size: .8rem; color: var(--muted); font-weight: 600; }
+table.tracks tr.removed { opacity: .6; }
+@media (max-width: 600px) { table.tracks td:first-child, table.tracks th:first-child { display: none; } }

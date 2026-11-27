@@ -4,7 +4,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     YTMLS_DATA_DIR=/data \
-    YTMLS_MUSIC_DIR=/music
+    YTMLS_MUSIC_DIR=/music \
+    DENO_DIR=/tmp/deno \
+    XDG_CACHE_HOME=/tmp/cache
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY requirements.txt .

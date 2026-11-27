@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Removals{% endblock %}
+{% block content %}
+<h1>Removals</h1>
+<p class="muted">Nothing is deleted from your music folder until you confirm it here. "Keep" leaves the file in place and stops asking about it.</p>
+{% if pending %}
+<form method="post" action="/removals/decide" id="removals-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+  <div class="toolbar">
+    <label class="check-all"><input type="checkbox" id="check-all" checked> Select all</label>
+    <div class="actions">
+      <button name="action" value="keep">Keep selected</button>
+      <button name="action" value="delete" class="danger" data-confirm="Delete the selected files from your music folder? This can't be undone.">Delete selected</button>
+    </div>
+  </div>
+  <ul class="items">
+    {% for r in pending %}
+    <li class="item"><label class="item-row">
+      <input type="checkbox" name="ids" value="{{ r.id }}" checked>
+      <span class="meta"><span class="title">{{ r.title }}</span>
+        <span class="sub muted">{{ r.reason }} · queued {{ r.created_at|ago }}</span>
+        {% if r.detail %}<code class="small">{{ r.detail }}</code>{% endif %}</span>
+    </label></li>
+    {% endfor %}
+  </ul>
+</form>
+{% else %}
+<p class="notice">Nothing is waiting for you.</p>
+{% endif %}
+{% if decided %}
+<h2 class="spaced">Recent decisions</h2>
+<ol class="events">
+  {% for r in decided %}<li><time class="muted small">{{ r.decided_at|datetime }}</time> <span class="badge">{{ r.decision }}</span> {{ r.title }}</li>{% endfor %}
+</ol>
+{% endif %}
+{% endblock %}

@@ -32,3 +32,29 @@ def test_mutating_list_covers_installed_ytmusicapi():
     }
     missing = suspicious - MUTATING
     assert not missing, f"New account-changing methods in ytmusicapi; add them to MUTATING: {missing}"
+
+
+def test_downloader_never_marks_videos_watched(monkeypatch, tmp_path):
+    """yt-dlp can report playback to YouTube; make sure that stays off."""
+    captured = {}
+
+    class FakeYDL:
+        def __init__(self, opts):
+            captured.update(opts)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download):
+            out = tmp_path / "x.webm"
+            out.write_bytes(b"x")
+            return {"requested_downloads": [{"filepath": str(out)}], "format_id": "251"}
+
+    import yt_dlp
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", FakeYDL)
+    from app.downloader import YtDlpDownloader
+    YtDlpDownloader().fetch_audio("x", tmp_path, tmp_path / "c.txt", premium=False)
+    assert captured["mark_watched"] is False

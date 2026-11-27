@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from contextlib import asynccontextmanager
 import secrets
 import time
 from collections.abc import Callable
@@ -19,7 +21,10 @@ from fastapi.templating import Jinja2Templates
 from . import security
 from .config import Settings, load_settings
 from .db import Database
+from .downloader import Downloader, YtDlpDownloader
 from .library import refresh_library
+from .media import MP3_QUALITIES
+from .sync import DEFAULTS, Scheduler, SyncEngine, SyncSummary, get_option
 from .security import LoginThrottle, Session, SessionStore, Vault
 from .ytm import CookieError, LibrarySource, ReadOnlyYTMusic, parse_cookies
 
@@ -38,6 +43,10 @@ MESSAGES = {
     "2fa_disabled": "Two-factor authentication is off.",
     "sessions_revoked": "All other sessions were signed out.",
     "refreshed": "Library refreshed.",
+    "sync_started": "Sync started. This page updates as it runs.",
+    "sync_busy": "A sync is already running.",
+    "sync_saved": "Sync settings saved.",
+    "removals_done": "Done.",
 }
 
 CSP = (
@@ -59,6 +68,8 @@ class Forbidden(Exception):
 def create_app(
     settings: Settings | None = None,
     ytm_factory: Callable[[str], LibrarySource] | None = None,
+    downloader: Downloader | None = None,
+    start_scheduler: bool = True,
 ) -> FastAPI:
     settings = settings or load_settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -69,9 +80,32 @@ def create_app(
     ytm_factory = ytm_factory or ReadOnlyYTMusic
     templates = Jinja2Templates(directory=str(BASE / "templates"))
     templates.env.filters["ago"] = _ago
+    templates.env.filters["until"] = lambda ts: _until(ts) or ""
     templates.env.filters["datetime"] = lambda ts: time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
 
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    def ytm_cookies() -> str | None:
+        enc = db.get_setting("ytm_cookies_enc")
+        return vault.decrypt(enc) if enc else None
+
+    engine = SyncEngine(
+        db, settings.music_dir, settings.data_dir / "tmp", ytm_cookies, ytm_factory,
+        downloader or YtDlpDownloader(),
+    )
+    scheduler = Scheduler(engine, db)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # A run interrupted by a restart would otherwise look like it's still going.
+        db.execute("UPDATE sync_runs SET status = 'error', error = 'Interrupted by restart', finished_at = ? "
+                   "WHERE status = 'running'", (time.time(),))
+        if start_scheduler:
+            scheduler.start()
+        yield
+        scheduler.stop()
+
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+    app.state.engine = engine
+    app.state.scheduler = scheduler
     app.state.db = db
     app.state.settings = settings
     app.state.setup_token = None
@@ -135,6 +169,9 @@ def create_app(
                pre: str | None = None) -> HTMLResponse:
         msg = request.query_params.get("msg")
         ctx.setdefault("notice", MESSAGES.get(msg or ""))
+        if ctx.get("s"):
+            ctx.setdefault("pending_removals", db.one(
+                "SELECT COUNT(*) AS n FROM removals WHERE decision IS NULL")["n"])
         resp = templates.TemplateResponse(request, name, ctx, status_code=status)
         if pre:
             set_cookie(resp, PRE_COOKIE, pre, 3600)
@@ -155,10 +192,6 @@ def create_app(
         set_cookie(resp, SESSION_COOKIE, token, max_age)
         resp.delete_cookie(PRE_COOKIE, path="/")
         return resp
-
-    def ytm_cookies() -> str | None:
-        enc = db.get_setting("ytm_cookies_enc")
-        return vault.decrypt(enc) if enc else None
 
     def do_refresh() -> str:
         netscape = ytm_cookies()
@@ -325,11 +358,17 @@ def create_app(
     @app.get("/")
     def library_page(request: Request):
         s = require(request)
-        items = db.all("SELECT * FROM library_items ORDER BY removed_at IS NOT NULL, kind DESC, title COLLATE NOCASE")
+        items = db.all(
+            "SELECT li.*, "
+            "(SELECT COUNT(*) FROM item_tracks it JOIN tracks t ON t.video_id = it.video_id "
+            " WHERE it.item_id = li.id AND it.removed_at IS NULL AND t.status = 'downloaded') AS downloaded, "
+            "(SELECT COUNT(*) FROM item_tracks it WHERE it.item_id = li.id AND it.removed_at IS NULL) AS known "
+            "FROM library_items li ORDER BY li.removed_at IS NOT NULL, li.kind DESC, li.title COLLATE NOCASE")
         last = db.get_setting("library_last_refresh")
         return render(request, "library.html", {
             "s": s, "items": items, "csrf": s.csrf_token,
             "last_refresh": float(last) if last else None,
+            "status": sync_status(),
             "has_cookies": db.get_setting("ytm_cookies_enc") is not None,
             "new_count": sum(1 for i in items if not i["reviewed"] and i["removed_at"] is None),
             "error": request.query_params.get("error") == "refresh" and db.get_setting("last_refresh_error"),
@@ -366,6 +405,97 @@ def create_app(
         db.execute("UPDATE library_items SET reviewed = 1 WHERE reviewed = 0")
         return {"ok": True}
 
+    # ------------------------------------------------------------ sync
+
+    def sync_status() -> dict[str, Any]:
+        last = db.one("SELECT * FROM sync_runs WHERE status != 'running' ORDER BY id DESC LIMIT 1")
+        last_summary = json.loads(last["summary"]) if last and last["summary"] else None
+        headline = SyncSummary(**last_summary).headline() if last_summary else None
+        return {
+            "running": engine.running or scheduler.queued,
+            "progress": dict(engine.progress),
+            "last_run": {"finished_at": last["finished_at"], "status": last["status"], "headline": headline,
+                         "error": last["error"]} if last else None,
+            "next_run": scheduler.next_run_at(),
+            "pending_removals": db.one("SELECT COUNT(*) AS n FROM removals WHERE decision IS NULL")["n"],
+        }
+
+    @app.post("/sync/now")
+    def sync_now(request: Request, csrf_token: str = Form("")):
+        s = require(request)
+        require_csrf(request, s, csrf_token)
+        started = scheduler.trigger_now()
+        return RedirectResponse(f"/?msg={'sync_started' if started else 'sync_busy'}", status_code=303)
+
+    @app.get("/api/status")
+    def api_status(request: Request):
+        require(request, api=True)
+        st = sync_status()
+        st["last_run_ago"] = _ago(st["last_run"]["finished_at"]) if st["last_run"] else None
+        st["next_run_in"] = _until(st["next_run"])
+        return st
+
+    @app.get("/items/{item_id}")
+    def item_page(request: Request, item_id: str):
+        s = require(request)
+        item = db.one("SELECT * FROM library_items WHERE id = ?", (item_id,))
+        if item is None:
+            return Response("Not found", status_code=404)
+        tracks = db.all(
+            "SELECT t.*, it.position, it.removed_at AS link_removed FROM item_tracks it "
+            "JOIN tracks t ON t.video_id = it.video_id WHERE it.item_id = ? "
+            "ORDER BY it.removed_at IS NOT NULL, it.position", (item_id,))
+        return render(request, "item.html", {"s": s, "csrf": s.csrf_token, "item": item, "tracks": tracks})
+
+    @app.post("/tracks/{video_id}/retry")
+    def track_retry(request: Request, video_id: str, csrf_token: str = Form(""), back: str = Form("/")):
+        s = require(request)
+        require_csrf(request, s, csrf_token)
+        db.execute("UPDATE tracks SET attempts = 0, status = 'pending', error = NULL WHERE video_id = ? "
+                   "AND status = 'failed'", (video_id,))
+        target = back if back.startswith("/items/") else "/"
+        return RedirectResponse(target, status_code=303)
+
+    @app.get("/removals")
+    def removals_page(request: Request):
+        s = require(request)
+        pending = db.all("SELECT * FROM removals WHERE decision IS NULL ORDER BY created_at, title")
+        decided = db.all("SELECT * FROM removals WHERE decision IS NOT NULL ORDER BY decided_at DESC LIMIT 50")
+        return render(request, "removals.html", {"s": s, "csrf": s.csrf_token, "pending": pending,
+                                                 "decided": decided})
+
+    @app.post("/removals/decide")
+    def removals_decide(request: Request, csrf_token: str = Form(""), action: str = Form(""),
+                        ids: list[int] = Form(default_factory=list)):
+        s = require(request)
+        require_csrf(request, s, csrf_token)
+        if action not in {"delete", "keep"}:
+            return RedirectResponse("/removals", status_code=303)
+        for rid in ids[:5000]:
+            engine.decide_removal(rid, delete=(action == "delete"))
+        return RedirectResponse("/removals?msg=removals_done", status_code=303)
+
+    @app.post("/settings/sync")
+    def settings_sync(request: Request, csrf_token: str = Form(""), interval: str = Form("6"),
+                      quality: str = Form("320"), premium: str = Form(""), max_per_run: str = Form("200")):
+        s = require(request)
+        require_csrf(request, s, csrf_token)
+        try:
+            hours = min(48.0, max(1.0, float(interval)))
+            per_run = min(2000, max(1, int(max_per_run)))
+        except ValueError:
+            return render(request, "settings.html", settings_ctx(s, sync_error="Enter numbers for the interval "
+                                                                    "and the per-run limit."), 400)
+        if quality not in MP3_QUALITIES:
+            quality = DEFAULTS["mp3_quality"]
+        db.set_setting("sync_interval_hours", f"{hours:g}")
+        db.set_setting("mp3_quality", quality)
+        db.set_setting("premium_quality", "1" if premium else "0")
+        db.set_setting("max_downloads_per_run", str(per_run))
+        db.log_event("settings", f"Sync settings: every {hours:g}h, MP3 {quality}, "
+                                 f"Premium quality {'on' if premium else 'off'}, up to {per_run} downloads per run")
+        return RedirectResponse("/settings?msg=sync_saved#sync", status_code=303)
+
     @app.get("/history")
     def history_page(request: Request):
         s = require(request)
@@ -384,6 +514,8 @@ def create_app(
             "cookies_expiry": float(expiry) if expiry else None,
             "ytm_status": db.get_setting("ytm_status"),
             "other_sessions": sessions.count_for_user(s.user_id) - 1,
+            "sync": {k: get_option(db, k) for k in DEFAULTS},
+            "qualities": list(MP3_QUALITIES),
         }
         ctx.update(extra)
         return ctx
@@ -524,6 +656,16 @@ def _ago(ts: float | None) -> str:
             n = int(delta // size)
             return f"{n} {unit}{'s' if n != 1 else ''} ago"
     return "just now"
+
+
+def _until(ts: float | None) -> str | None:
+    if ts is None:
+        return None
+    delta = ts - time.time()
+    if delta <= 60:
+        return "any moment"
+    hours, rem = divmod(int(delta), 3600)
+    return f"in {hours}h {rem // 60}m" if hours else f"in {rem // 60}m"
 
 
 def get_app() -> FastAPI:

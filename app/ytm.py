@@ -124,6 +124,12 @@ class LibraryEntry:
 class LibrarySource(Protocol):
     def library_albums(self) -> list[LibraryEntry]: ...
     def library_playlists(self) -> list[LibraryEntry]: ...
+    def album(self, browse_id: str) -> dict[str, Any]: ...
+    def playlist(self, playlist_id: str) -> dict[str, Any]: ...
+
+
+def thumb_url(item: dict[str, Any]) -> str | None:
+    return _thumb(item)
 
 
 def _thumb(item: dict[str, Any]) -> str | None:
@@ -206,3 +212,9 @@ class ReadOnlyYTMusic:
     def library_playlists(self) -> list[LibraryEntry]:
         items = self.__client.get_library_playlists(limit=None)
         return [e for e in (playlist_entry(i) for i in items) if e]
+
+    def album(self, browse_id: str) -> dict[str, Any]:
+        return self.__client.get_album(browse_id)
+
+    def playlist(self, playlist_id: str) -> dict[str, Any]:
+        return self.__client.get_playlist(playlist_id, limit=None)

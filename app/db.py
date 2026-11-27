@@ -63,6 +63,65 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX idx_events_ts ON events(ts);
     """,
+    # 2: sync engine
+    """
+    CREATE TABLE tracks (
+        video_id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        artists TEXT,                     -- display string, e.g. "A, B"
+        album TEXT,
+        album_id TEXT,
+        album_artist TEXT,
+        track_number INTEGER,
+        year TEXT,
+        duration INTEGER,
+        cover_url TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',   -- pending | downloaded | failed | removed
+        file_path TEXT,                   -- relative to the music folder
+        error TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        keep INTEGER NOT NULL DEFAULT 0,  -- user chose to keep the file even when nothing references it
+        downloaded_at REAL,
+        updated_at REAL NOT NULL
+    );
+    CREATE INDEX idx_tracks_status ON tracks(status);
+    CREATE TABLE item_tracks (
+        item_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
+        video_id TEXT NOT NULL REFERENCES tracks(video_id) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        added_at REAL NOT NULL,
+        removed_at REAL,
+        PRIMARY KEY (item_id, video_id)
+    );
+    CREATE INDEX idx_item_tracks_video ON item_tracks(video_id);
+    CREATE TABLE album_cache (
+        browse_id TEXT PRIMARY KEY,
+        data TEXT NOT NULL,
+        fetched_at REAL NOT NULL
+    );
+    CREATE TABLE removals (
+        id INTEGER PRIMARY KEY,
+        kind TEXT NOT NULL,               -- 'track' | 'playlist_file'
+        ref TEXT NOT NULL,                -- video_id or playlist item id
+        title TEXT NOT NULL,
+        detail TEXT,
+        reason TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        decided_at REAL,
+        decision TEXT                     -- NULL (pending) | 'deleted' | 'kept' | 'cancelled'
+    );
+    CREATE INDEX idx_removals_pending ON removals(decision);
+    CREATE TABLE sync_runs (
+        id INTEGER PRIMARY KEY,
+        trigger TEXT NOT NULL,            -- 'schedule' | 'manual'
+        started_at REAL NOT NULL,
+        finished_at REAL,
+        status TEXT NOT NULL,             -- running | ok | partial | error
+        summary TEXT,                     -- JSON
+        error TEXT
+    );
+    ALTER TABLE library_items ADD COLUMN playlist_file TEXT;
+    """,
 ]
 
 

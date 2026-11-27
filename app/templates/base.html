@@ -14,6 +14,7 @@
     {% if s %}
     <nav>
       <a href="/" {% if request.url.path == '/' %}aria-current="page"{% endif %}>Library</a>
+      <a href="/removals" {% if request.url.path == '/removals' %}aria-current="page"{% endif %}>Removals{% if pending_removals %} <span class="count">{{ pending_removals }}</span>{% endif %}</a>
       <a href="/history" {% if request.url.path == '/history' %}aria-current="page"{% endif %}>History</a>
       <a href="/settings" {% if request.url.path == '/settings' %}aria-current="page"{% endif %}>Settings</a>
       <form method="post" action="/logout" class="inline">
