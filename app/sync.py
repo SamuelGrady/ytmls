@@ -25,6 +25,7 @@ from .db import Database
 from .downloader import Downloader, produce_track
 from .library import refresh_library
 from .media import TrackMeta
+from .ytauth import CookieStore, looks_like_auth_error
 from .ytm import LibrarySource, parse_cookies, thumb_url
 
 log = logging.getLogger("ytmls.sync")
@@ -130,7 +131,7 @@ class SyncEngine:
         db: Database,
         music_dir: Path,
         tmp_root: Path,
-        get_cookies: Callable[[], str | None],
+        cookies: CookieStore,
         source_factory: Callable[[str], LibrarySource],
         downloader: Downloader,
         sleep: Callable[[float], None] = time.sleep,
@@ -138,7 +139,7 @@ class SyncEngine:
         self.db = db
         self.music_dir = music_dir
         self.tmp_root = tmp_root
-        self.get_cookies = get_cookies
+        self.cookies = cookies
         self.source_factory = source_factory
         self.downloader = downloader
         self.sleep = sleep
@@ -170,23 +171,33 @@ class SyncEngine:
         status, error = "ok", None
         try:
             self.progress = {"phase": "Reading library"}
-            netscape = self.get_cookies()
+            netscape, gen = self.cookies.load()
             if not netscape:
                 raise RuntimeError("No YouTube Music cookies are saved.")
-            source = self.source_factory(parse_cookies(netscape).cookie_header)
-
-            lib = refresh_library(self.db, source)
+            try:
+                source = self.source_factory(parse_cookies(netscape).cookie_header)
+                lib = refresh_library(self.db, source)
+            except Exception as exc:
+                self.cookies.record_failure(f"Reading the library failed: {exc}")
+                raise
+            self.cookies.record_ok()
             summary.library_new = [] if lib.first_import else [e.title for e in lib.added]
             summary.library_gone = list(lib.removed)
 
             self.progress = {"phase": "Reading synced albums and playlists"}
-            self._update_memberships(source, summary)
+            try:
+                self._update_memberships(source, summary)
+            finally:
+                self._save_from_source(source, gen)
             summary.removals_cancelled = self._cancel_stale_removals()
 
             problem = media.folder_problem(self.music_dir)
             if problem:
                 raise RuntimeError(problem)
-            self._download_missing(netscape, summary)
+            latest, latest_gen = self.cookies.load()
+            if latest is None or latest_gen != gen:
+                raise RuntimeError("The YouTube Music cookies were changed during the sync; run it again.")
+            self._download_missing(latest, gen, summary)
             self._queue_removals(summary)
             self._write_playlists(summary)
             if summary.failed or summary.errors:
@@ -209,6 +220,45 @@ class SyncEngine:
             except Exception:
                 log.exception("on_finished hook failed")
         return summary
+
+    # ------------------------------------------------------------ sign-in
+
+    def _save_from_source(self, source: LibrarySource, gen: str | None) -> None:
+        get = getattr(source, "refreshed_cookies", None)
+        if get is None:
+            return
+        try:
+            self.cookies.save_refreshed(get(), gen)
+        except Exception:
+            log.warning("Could not save refreshed cookies", exc_info=True)
+
+    def keep_alive(self) -> bool | None:
+        """Small read-only request between syncs, so the sign-in keeps getting refreshed.
+
+        Returns True if it worked, False if YouTube refused, None if skipped.
+        """
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            netscape, gen = self.cookies.load()
+            if not netscape:
+                return None
+            try:
+                source = self.source_factory(parse_cookies(netscape).cookie_header)
+                ping = getattr(source, "ping", None)
+                if ping is not None:
+                    ping()
+                else:
+                    source.library_playlists()
+            except Exception as exc:
+                log.warning("YouTube Music sign-in check failed: %s", exc)
+                self.cookies.record_failure(f"Sign-in check failed: {exc}")
+                return False
+            self.cookies.record_ok()
+            self._save_from_source(source, gen)
+            return True
+        finally:
+            self._lock.release()
 
     # ------------------------------------------------------------ tracks
 
@@ -486,7 +536,7 @@ class SyncEngine:
             rel = rel.with_name(f"{rel.stem} [{meta.video_id}].mp3")
         return rel
 
-    def _download_missing(self, netscape: str, summary: SyncSummary) -> None:
+    def _download_missing(self, netscape: str, gen: str | None, summary: SyncSummary) -> None:
         wanted = self.wanted()
         todo = [r for r in self.db.all(
             "SELECT * FROM tracks WHERE status IN ('pending', 'failed', 'removed') AND attempts < ? "
@@ -524,6 +574,14 @@ class SyncEngine:
                                     "updated_at = ? WHERE video_id = ?", (msg, time.time(), t["video_id"]))
                     summary.failed.append(t["title"])
                     log.warning("Download failed for %s: %s", t["video_id"], msg)
+                    if looks_like_auth_error(str(exc)):
+                        # Every other download would fail the same way; stop cleanly.
+                        self.cookies.record_failure(f"YouTube refused a download: {msg}")
+                        summary.errors.append(
+                            "YouTube stopped accepting the saved cookies. Downloads are paused until you "
+                            "upload fresh ones in Settings.")
+                        summary.deferred += len(todo) - n
+                        break
                     if consecutive >= MAX_CONSECUTIVE_FAILURES:
                         summary.errors.append(
                             f"Stopped after {consecutive} failures in a row. Last error: {msg}. "
@@ -541,6 +599,13 @@ class SyncEngine:
                 if delay and n < len(todo):
                     self.sleep(delay)
         finally:
+            # yt-dlp writes the refreshed values YouTube sent back into this file.
+            try:
+                self.cookies.save_refreshed(cookies_file.read_text(), gen)
+            except OSError:
+                pass
+            except Exception:
+                log.warning("Could not save refreshed cookies from yt-dlp", exc_info=True)
             cookies_file.unlink(missing_ok=True)
         if summary.downloaded:
             self.db.log_event("download", f"Downloaded {summary.downloaded} tracks")
@@ -628,5 +693,10 @@ class Scheduler:
                     pass
                 except Exception:
                     log.exception("Scheduler run crashed")
+            elif self.engine.cookies.keepalive_due():
+                try:
+                    self.engine.keep_alive()
+                except Exception:
+                    log.exception("Sign-in check crashed")
             self._wake.wait(60)
             self._wake.clear()

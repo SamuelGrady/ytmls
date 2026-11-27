@@ -7,6 +7,7 @@ to make sure no account-changing ytmusicapi method is referenced anywhere.
 
 from __future__ import annotations
 
+import functools
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -107,6 +108,87 @@ def cookie_header_from_netscape(netscape: str) -> str:
     return parse_cookies(netscape).cookie_header
 
 
+# ---------------------------------------------------------------- refreshed cookies
+#
+# Google keeps a signed-in session alive by sending new values for some cookies
+# (SIDCC, __Secure-3PSIDCC, __Secure-1PSIDTS ...) on normal requests. If those
+# new values are thrown away, the copy YTMLS stores goes stale and stops working
+# after a day or so. The helpers below merge the new values back into the stored
+# copy. They never invent cookies and never drop any.
+
+MAX_STORED_COOKIES = 300
+
+
+def _read_youtube_cookies(text: str) -> list[_Cookie]:
+    out = []
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("#HttpOnly_"):
+            line = line[len("#HttpOnly_"):]
+        elif not line or line.startswith("#"):
+            continue
+        fields = line.split("\t")
+        if len(fields) != 7:
+            continue
+        domain, _flag, path, secure, expires, name, value = fields
+        if not name or not domain.lstrip(".").endswith("youtube.com"):
+            continue
+        try:
+            exp = int(float(expires))
+        except ValueError:
+            exp = 0
+        out.append(_Cookie(domain, path or "/", secure.upper() == "TRUE", exp, name, value))
+    return out
+
+
+def _to_netscape(cookies: list[_Cookie]) -> str:
+    out = ["# Netscape HTTP Cookie File"]
+    for c in cookies:
+        flag = "TRUE" if c.domain.startswith(".") else "FALSE"
+        out.append("\t".join([c.domain, flag, c.path, "TRUE" if c.secure else "FALSE", str(c.expires), c.name, c.value]))
+    return "\n".join(out) + "\n"
+
+
+def netscape_from_jar(jar: Any) -> str:
+    """Turn a requests/http.cookiejar jar into cookies.txt text (youtube.com only)."""
+    cookies = [
+        _Cookie(c.domain, c.path or "/", bool(c.secure), int(c.expires or 0), c.name, c.value or "")
+        for c in jar if c.domain and c.domain.lstrip(".").endswith("youtube.com") and c.name
+    ]
+    return _to_netscape(cookies)
+
+
+def merge_cookies(stored: str, updates: str, now: float | None = None) -> str | None:
+    """Apply newer cookie values from ``updates`` on top of ``stored``.
+
+    Returns the merged cookies.txt text, or None when nothing changed. Cookies
+    that are being deleted (empty or already expired) are ignored, so a bad
+    response can never wipe the sign-in.
+    """
+    now = time.time() if now is None else now
+    current = _read_youtube_cookies(stored)
+    index = {(c.domain, c.path, c.name): i for i, c in enumerate(current)}
+    changed = False
+    for c in _read_youtube_cookies(updates):
+        if not c.value or (c.expires and c.expires < now):
+            continue
+        key = (c.domain, c.path, c.name)
+        if key in index:
+            old = current[index[key]]
+            if old.value != c.value or (c.expires and c.expires != old.expires):
+                # A session-only value keeps the stored expiry, so it isn't treated as expiring now.
+                current[index[key]] = _Cookie(old.domain, old.path, old.secure or c.secure,
+                                              c.expires or old.expires, c.name, c.value)
+                changed = True
+        elif len(current) < MAX_STORED_COOKIES:
+            index[key] = len(current)
+            current.append(c)
+            changed = True
+    if not changed or REQUIRED_COOKIE not in {c.name for c in current}:
+        return None
+    return _to_netscape(current)
+
+
 # ---------------------------------------------------------------- library
 
 
@@ -126,6 +208,10 @@ class LibrarySource(Protocol):
     def library_playlists(self) -> list[LibraryEntry]: ...
     def album(self, browse_id: str) -> dict[str, Any]: ...
     def playlist(self, playlist_id: str) -> dict[str, Any]: ...
+
+    # Optional extras (ReadOnlyYTMusic has them; test fakes may not):
+    #   ping() -> None                       small read to check the sign-in still works
+    #   refreshed_cookies() -> str | None    cookies.txt with values YouTube sent back
 
 
 def thumb_url(item: dict[str, Any]) -> str | None:
@@ -203,7 +289,25 @@ class ReadOnlyYTMusic:
             "accept": "*/*",
             "content-type": "application/json",
         }
-        self.__client = YTMusic(auth=headers)
+        import requests
+
+        # Our own session, so we can see the refreshed cookies YouTube sends back.
+        # ytmusicapi sets the Cookie header itself, so the jar only collects them.
+        self.__session = requests.Session()
+        self.__session.request = functools.partial(self.__session.request, timeout=30)  # type: ignore[method-assign]
+        self.__client = YTMusic(auth=headers, requests_session=self.__session)
+
+    def ping(self) -> None:
+        """Cheapest library read; raises if YouTube no longer accepts the sign-in."""
+        # get_account_info fails outright when signed out, unlike library reads,
+        # which can quietly come back empty.
+        info = self.__client.get_account_info()
+        if not info or not info.get("accountName"):
+            raise RuntimeError("YouTube Music says this browser session is signed out.")
+
+    def refreshed_cookies(self) -> str | None:
+        text = netscape_from_jar(self.__session.cookies)
+        return text if text.count("\n") > 1 else None
 
     def library_albums(self) -> list[LibraryEntry]:
         items = self.__client.get_library_albums(limit=None)
