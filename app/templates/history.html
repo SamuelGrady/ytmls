@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}History{% endblock %}
+{% block content %}
+<h1>History</h1>
+{% if events %}
+<ol class="events">
+  {% for e in events %}
+  <li><time class="muted small" title="{{ e.ts|datetime }}">{{ e.ts|datetime }}</time>
+      <span class="badge kind-{{ e.kind }}">{{ e.kind }}</span> {{ e.message }}</li>
+  {% endfor %}
+</ol>
+{% else %}
+<p class="muted">Nothing has happened yet.</p>
+{% endif %}
+{% endblock %}

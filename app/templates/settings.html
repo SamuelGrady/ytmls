@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+
+<section class="card" id="youtube">
+  <h2>YouTube Music account</h2>
+  <p class="muted small">YTMLS only reads your library. It never changes anything on your YouTube or Google account. Cookies are stored encrypted.</p>
+  {% if has_cookies %}
+    <p>Status: {% if ytm_status == 'ok' %}<span class="badge ok">Connected</span>{% else %}<span class="badge warn">Needs attention</span>{% endif %}
+       <span class="muted small">Saved {{ cookies_saved_at|ago }}{% if cookies_expiry %}, earliest cookie expires {{ cookies_expiry|datetime }}{% endif %}.</span></p>
+  {% endif %}
+  {% if yt_error %}<p class="notice err">{{ yt_error }}</p>{% endif %}
+  <details {% if not has_cookies or yt_error %}open{% endif %}>
+    <summary>{{ 'Replace cookies' if has_cookies else 'Add cookies' }}</summary>
+    <ol class="small">
+      <li>In a private/incognito window, sign in at <code>music.youtube.com</code>.</li>
+      <li>Export cookies for that site in Netscape <code>cookies.txt</code> format, for example with the "Get cookies.txt LOCALLY" extension.</li>
+      <li>Close the private window without signing out, so the cookies stay valid longer.</li>
+      <li>Upload the file or paste its contents below. A raw <code>Cookie:</code> header copied from your browser's network tab also works.</li>
+    </ol>
+    <form method="post" action="/settings/youtube" enctype="multipart/form-data" class="stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <label>cookies.txt file <input type="file" name="cookies_file" accept=".txt,text/plain"></label>
+      <label>or paste <textarea name="cookies_text" rows="4" spellcheck="false" autocomplete="off"></textarea></label>
+      <button class="primary">Save and test</button>
+    </form>
+  </details>
+  {% if has_cookies %}
+  <form method="post" action="/settings/youtube/remove" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <button class="danger-link link">Remove cookies</button>
+  </form>
+  {% endif %}
+</section>
+
+<section class="card" id="password">
+  <h2>Password</h2>
+  {% if pw_error %}<p class="notice err">{{ pw_error }}</p>{% endif %}
+  <form method="post" action="/settings/password" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <input type="hidden" name="username" value="{{ s.username }}" autocomplete="username">
+    <label>Current password <input type="password" name="current" required autocomplete="current-password"></label>
+    <label>New password <input type="password" name="new" required minlength="12" autocomplete="new-password"></label>
+    <label>Confirm new password <input type="password" name="confirm" required minlength="12" autocomplete="new-password"></label>
+    <button>Change password</button>
+  </form>
+</section>
+
+<section class="card" id="twofa">
+  <h2>Two-factor authentication</h2>
+  {% if totp_error %}<p class="notice err">{{ totp_error }}</p>{% endif %}
+  {% if user.totp_enabled %}
+    <p><span class="badge ok">On</span> Sign-in asks for a code from your authenticator app.</p>
+    <form method="post" action="/settings/2fa/disable" class="stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <label>Password <input type="password" name="password" required autocomplete="current-password"></label>
+      <label>Current code <input name="code" inputmode="numeric" autocomplete="one-time-code" required></label>
+      <button class="danger">Turn off</button>
+    </form>
+  {% elif totp_setup %}
+    <p>Scan this with your authenticator app, then enter the code it shows.</p>
+    <div class="qr">{{ totp_setup.qr|safe }}</div>
+    <p class="small muted">Can't scan? Enter this key: <code>{{ totp_setup.secret }}</code></p>
+    {% if totp_setup.error %}<p class="notice err">{{ totp_setup.error }}</p>{% endif %}
+    <form method="post" action="/settings/2fa/confirm" class="stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <label>Code <input name="code" inputmode="numeric" autocomplete="one-time-code" required autofocus></label>
+      <button class="primary">Turn on</button>
+    </form>
+  {% else %}
+    <p class="muted">Strongly recommended, since the dashboard is reachable from the internet.</p>
+    <form method="post" action="/settings/2fa/start">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button class="primary">Set up two-factor</button>
+    </form>
+  {% endif %}
+</section>
+
+<section class="card" id="sessions">
+  <h2>Sessions</h2>
+  <p>{{ other_sessions }} other signed-in session{{ 's' if other_sessions != 1 }}.</p>
+  <form method="post" action="/settings/sessions/revoke">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <button {% if not other_sessions %}disabled{% endif %}>Sign out everywhere else</button>
+  </form>
+</section>
+{% endblock %}
