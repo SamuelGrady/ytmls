@@ -69,7 +69,9 @@
       Premium quality: ask for the 256 kbps AAC stream (needs YouTube Music Premium; falls back to the best stream otherwise)</label>
     <label class="checkbox"><input type="checkbox" name="singles" value="1" {% if sync.singles_loose == '1' %}checked{% endif %}>
       Keep singles out of Jellyfin's Albums: save songs YouTube Music lists as a Single, and playlist songs with no album, straight into the artist's folder (Artist/Title.mp3) with no album tag. EPs and albums keep their own folders.</label>
-    <p class="muted small">Changing this moves the singles you already have and updates your playlists. YTMLS also puts a small artist.nfo file in those artist folders, because Jellyfin would otherwise show an artist you only have singles from as one album named after the artist.</p>
+    <label class="checkbox"><input type="checkbox" name="incomplete" value="1" {% if sync.incomplete_loose == '1' %}checked{% endif %}>
+      Hide incomplete albums: songs that only come from your playlists, whose album you don't sync, are saved straight into the artist's folder the same way, so Jellyfin doesn't show a one- or two-song album for them. Check the album in your library and its songs move into a full album folder.</label>
+    <p class="muted small">Changing these moves the songs you already have and updates your playlists. YTMLS also puts a small artist.nfo file in those artist folders, because Jellyfin would otherwise show an artist you only have singles from as one album named after the artist.</p>
     <label>Most downloads per run <input type="number" name="max_per_run" min="1" max="2000" value="{{ sync.max_downloads_per_run }}"></label>
     <p class="muted small">YouTube's streams are already compressed, so 320 kbps is the setting that loses the least extra quality. Spreading a large first sync over several runs is gentler on your account.</p>
     <button class="primary">Save</button>
