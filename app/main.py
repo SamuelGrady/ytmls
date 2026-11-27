@@ -23,7 +23,6 @@ from .config import Settings, load_settings
 from .db import Database
 from .downloader import Downloader, YtDlpDownloader
 from .library import refresh_library
-from .media import MP3_QUALITIES
 from .notify import Notifier
 from .editor import EditError, MetadataEditor
 from .jellyfin import Jellyfin, JellyfinError
@@ -584,7 +583,7 @@ def create_app(
 
     @app.post("/settings/sync")
     def settings_sync(request: Request, csrf_token: str = Form(""), interval: str = Form("6"),
-                      quality: str = Form("320"), premium: str = Form(""), max_per_run: str = Form("200"),
+                      premium: str = Form(""), max_per_run: str = Form("200"),
                       singles: str = Form("")):
         s = require(request)
         require_csrf(request, s, csrf_token)
@@ -594,15 +593,12 @@ def create_app(
         except ValueError:
             return render(request, "settings.html", settings_ctx(request, s, sync_error="Enter numbers for the interval "
                                                                     "and the per-run limit."), 400)
-        if quality not in MP3_QUALITIES:
-            quality = DEFAULTS["mp3_quality"]
         db.set_setting("sync_interval_hours", f"{hours:g}")
-        db.set_setting("mp3_quality", quality)
         db.set_setting("premium_quality", "1" if premium else "0")
         db.set_setting("max_downloads_per_run", str(per_run))
         was_loose = get_option(db, "singles_loose") == "1"
         db.set_setting("singles_loose", "1" if singles else "0")
-        db.log_event("settings", f"Sync settings: every {hours:g}h, MP3 {quality}, "
+        db.log_event("settings", f"Sync settings: every {hours:g}h, "
                                  f"Premium quality {'on' if premium else 'off'}, up to {per_run} downloads per run, "
                                  f"singles {'kept out of Albums' if singles else 'in album folders'}")
         msg = "sync_saved"
@@ -866,7 +862,6 @@ def create_app(
             "sync": {k: get_option(db, k) for k in DEFAULTS},
             "push_subs": notifier.subscriptions(),
             "notify_quiet": db.get_setting("notify_quiet_unchanged") == "1",
-            "qualities": list(MP3_QUALITIES),
             "jellyfin_url": db.get_setting("jellyfin_url"),
             "jellyfin_has_key": db.get_setting("jellyfin_key_enc") is not None,
             "jellyfin_auto": db.get_setting("jellyfin_auto") != "0",

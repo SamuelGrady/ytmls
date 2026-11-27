@@ -58,3 +58,7 @@ def test_downloader_never_marks_videos_watched(monkeypatch, tmp_path):
     from app.downloader import YtDlpDownloader
     YtDlpDownloader().fetch_audio("x", tmp_path, tmp_path / "c.txt", premium=False)
     assert captured["mark_watched"] is False
+    assert captured["format"] == "bestaudio/best"
+    assert "postprocessors" not in captured  # yt-dlp never re-encodes; the stream is only remuxed
+    YtDlpDownloader().fetch_audio("x", tmp_path, tmp_path / "c.txt", premium=True)
+    assert captured["format"].startswith("774/141/")

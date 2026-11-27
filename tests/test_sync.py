@@ -2,7 +2,7 @@ import shutil
 from pathlib import Path
 
 import pytest
-from mutagen.id3 import ID3
+from mutagen.oggopus import OggOpus
 
 from app import media
 from app.ytm import LibraryEntry
@@ -38,28 +38,61 @@ def test_album_sync_layout_and_tags(ready):
     enable(ready, "MPREb_1")
     s = ready.state.engine.run("manual")
     assert s.downloaded == 2 and not s.failed, s
-    f1 = music(ready) / "Artist A" / "Album One" / "01 - First Song.mp3"
-    f2 = music(ready) / "Artist A" / "Album One" / "02 - Second_Song.mp3"
+    f1 = music(ready) / "Artist A" / "Album One" / "01 - First Song.opus"
+    f2 = music(ready) / "Artist A" / "Album One" / "02 - Second_Song.opus"
     assert f1.exists() and f2.exists()
-    tags = ID3(f1)
-    assert tags["TIT2"].text == ["First Song"]
-    assert tags["TPE2"].text == ["Artist A"]
-    assert tags["TALB"].text == ["Album One"]
-    assert tags["TRCK"].text == ["1"]
-    assert str(tags["TDRC"].text[0]) == "2020"
-    assert tags.getall("APIC")[0].mime == "image/jpeg"
-    assert tags.getall("TXXX:YouTube Video ID")[0].text == ["a1"]
+    tags = OggOpus(f1)
+    assert tags["title"] == ["First Song"]
+    assert tags["albumartist"] == ["Artist A"]
+    assert tags["album"] == ["Album One"]
+    assert tags["tracknumber"] == ["1"]
+    assert tags["date"][0] == "2020"
+    assert tags["metadata_block_picture"]
+    assert tags["youtube_video_id"] == ["a1"]
     # The cookies file handed to yt-dlp contained the cookies and is cleaned up afterwards.
     assert all(c[2] == 1 for c in FakeDownloader.calls)
     assert not list((ready.state.settings.data_dir / "tmp").glob("cookies-*"))
 
 
-def test_mp3_is_really_mp3(ready):
+def test_audio_is_kept_without_reencoding(ready):
     enable(ready, "MPREb_1")
     ready.state.engine.run("manual")
-    from mutagen.mp3 import MP3
-    audio = MP3(music(ready) / "Artist A" / "Album One" / "01 - First Song.mp3")
-    assert audio.info.bitrate == 320000
+    f = music(ready) / "Artist A" / "Album One" / "01 - First Song.opus"
+    assert media.probe_codec(f) == "opus"
+    # Stream copy keeps the source bitrate instead of inflating it to 320 kbps.
+    assert OggOpus(f).info.bitrate is None or OggOpus(f).info.bitrate < 200000
+    assert not list(f.parent.glob("*.mp3"))
+
+
+def test_aac_stream_is_saved_as_tagged_m4a(ready):
+    from mutagen.mp4 import MP4
+    FakeDownloader.stream = "m4a"
+    enable(ready, "MPREb_1")
+    assert ready.state.engine.run("manual").downloaded == 2
+    f = music(ready) / "Artist A" / "Album One" / "01 - First Song.m4a"
+    assert media.probe_codec(f) == "aac"
+    tags = MP4(f).tags
+    assert tags["\xa9nam"] == ["First Song"] and tags["aART"] == ["Artist A"]
+    assert tags["\xa9alb"] == ["Album One"] and tags["trkn"] == [(1, 0)] and tags["\xa9day"] == ["2020"]
+    assert bytes(tags[media.MP4_VIDEO_ID][0]) == b"a1"
+    assert media.read_cover(f)[1] == "image/jpeg"
+    row = ready.state.db.one("SELECT file_path FROM tracks WHERE video_id = 'a1'")
+    assert row["file_path"] == "Artist A/Album One/01 - First Song.m4a"
+
+
+def test_existing_mp3_files_keep_working(ready, tmp_path):
+    """Files from before the switch stay MP3: retagging and moving them still works."""
+    import subprocess
+    from mutagen.id3 import ID3
+    f = tmp_path / "old.mp3"
+    subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i",
+                    "sine=frequency=440:duration=1", "-c:a", "libmp3lame", str(f)], check=True)
+    meta = media.TrackMeta("a1", "First Song", "Artist A", "Album One", "Artist A", 1, "2020", None)
+    media.write_tags(f, meta, (b"\xff\xd8\xffcover", "image/jpeg"))
+    media.retag(f, meta)
+    tags = ID3(f)
+    assert tags["TIT2"].text == ["First Song"] and tags.getall("APIC")[0].data == b"\xff\xd8\xffcover"
+    assert media.track_relpath(meta, f.suffix).as_posix() == "Artist A/Album One/01 - First Song.mp3"
 
 
 def test_playlist_writes_m3u_and_shares_files(ready):
@@ -69,9 +102,9 @@ def test_playlist_writes_m3u_and_shares_files(ready):
     assert s.downloaded == 3
     assert [c[0] for c in FakeDownloader.calls].count("a2") == 1
     m3u = (music(ready) / "Playlists" / "Road Trip.m3u8").read_text()
-    assert "../Artist A/Album One/02 - Second_Song.mp3" in m3u
-    assert "../Artist B/Music Video/Music Video.mp3" in m3u
-    assert m3u.index("Second_Song") < m3u.index("Music Video.mp3")
+    assert "../Artist A/Album One/02 - Second_Song.opus" in m3u
+    assert "../Artist B/Music Video/Music Video.opus" in m3u
+    assert m3u.index("Second_Song") < m3u.index("Music Video.opus")
 
 
 def test_new_playlist_tracks_sync_automatically(ready):
@@ -83,13 +116,13 @@ def test_new_playlist_tracks_sync_automatically(ready):
     s = ready.state.engine.run("schedule")
     assert s.tracks_new == {"Road Trip": ["First Song"]}
     assert s.downloaded == 1
-    assert (music(ready) / "Artist A" / "Album One" / "01 - First Song.mp3").exists()
+    assert (music(ready) / "Artist A" / "Album One" / "01 - First Song.opus").exists()
 
 
 def test_removed_track_waits_for_confirmation(ready):
     enable(ready, "PL1")
     ready.state.engine.run("manual")
-    path = music(ready) / "Artist B" / "Music Video" / "Music Video.mp3"
+    path = music(ready) / "Artist B" / "Music Video" / "Music Video.opus"
     assert path.exists()
     FakeYTM.playlist_tracks["PL1"].pop()  # drop the music video
     s = ready.state.engine.run("manual")
@@ -114,7 +147,7 @@ def test_keep_decision_stops_asking(ready):
     ready.state.engine.run("manual")
     rid = ready.state.db.one("SELECT id FROM removals WHERE decision IS NULL")["id"]
     ready.state.engine.decide_removal(rid, delete=False)
-    assert (music(ready) / "Artist B" / "Music Video" / "Music Video.mp3").exists()
+    assert (music(ready) / "Artist B" / "Music Video" / "Music Video.opus").exists()
     assert ready.state.engine.run("manual").removals_queued == []
 
 
@@ -176,13 +209,13 @@ def test_premium_toggle_is_passed_to_downloader(ready):
 
 
 def test_existing_unrelated_file_is_not_overwritten(ready):
-    target = music(ready) / "Artist A" / "Album One" / "01 - First Song.mp3"
+    target = music(ready) / "Artist A" / "Album One" / "01 - First Song.opus"
     target.parent.mkdir(parents=True)
     target.write_bytes(b"user's own file")
     enable(ready, "MPREb_1")
     ready.state.engine.run("manual")
     assert target.read_bytes() == b"user's own file"
-    assert (target.parent / "01 - First Song [a1].mp3").exists()
+    assert (target.parent / "01 - First Song [a1].opus").exists()
 
 
 def test_run_without_cookies_records_error(app):
@@ -196,7 +229,7 @@ def test_safe_name_and_path_guard(tmp_path):
     assert media.safe_name("..") == "Unknown"
     assert media.safe_name("CON") == "_CON"
     with pytest.raises(ValueError):
-        media.ensure_inside(tmp_path, Path("../escape.mp3"))
+        media.ensure_inside(tmp_path, Path("../escape.opus"))
 
 
 def test_big_cover_url():
@@ -230,16 +263,15 @@ def test_library_shows_status_and_counts(ready, authed):
     assert "2/2 downloaded" in page
     assert "Last sync" in page and "2 downloaded" in page
     item = authed.get("/items/MPREb_1").text
-    assert "Album One/01 - First Song.mp3" in item
+    assert "Album One/01 - First Song.opus" in item
 
 
 def test_sync_settings_saved_and_clamped(ready, authed):
     csrf = csrf_from(authed.get("/settings").text)
-    authed.post("/settings/sync", data={"csrf_token": csrf, "interval": "0.1", "quality": "V0",
+    authed.post("/settings/sync", data={"csrf_token": csrf, "interval": "0.1",
                                         "premium": "1", "max_per_run": "99999"})
     db = ready.state.db
     assert db.get_setting("sync_interval_hours") == "1"
-    assert db.get_setting("mp3_quality") == "V0"
     assert db.get_setting("premium_quality") == "1"
     assert db.get_setting("max_downloads_per_run") == "2000"
 

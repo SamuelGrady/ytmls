@@ -60,18 +60,14 @@
   <form method="post" action="/settings/sync" class="stack">
     <input type="hidden" name="csrf_token" value="{{ csrf }}">
     <label>Sync every (hours) <input type="number" name="interval" min="1" max="48" step="0.5" value="{{ sync.sync_interval_hours }}"></label>
-    <label>MP3 quality
-      <select name="quality">
-        {% for q in qualities %}<option value="{{ q }}" {% if q == sync.mp3_quality %}selected{% endif %}>{{ 'VBR V0 (~245 kbps)' if q == 'V0' else q ~ ' kbps CBR' }}</option>{% endfor %}
-      </select>
-    </label>
+    <p class="muted small">Songs are saved in the best quality YouTube Music offers your account, exactly as it sends them, with no re-encoding. Without Premium that's Opus at about 160 kbps (.opus files). Jellyfin plays these and converts them on the fly for any player that can't.</p>
     <label class="checkbox"><input type="checkbox" name="premium" value="1" {% if sync.premium_quality == '1' %}checked{% endif %}>
-      Premium quality: ask for the 256 kbps AAC stream (needs YouTube Music Premium; falls back to the best stream otherwise)</label>
+      Premium quality: ask for the 256 kbps streams (Opus, or AAC as .m4a) that Premium accounts get. Without Premium it falls back to the best stream offered.</label>
     <label class="checkbox"><input type="checkbox" name="singles" value="1" {% if sync.singles_loose == '1' %}checked{% endif %}>
-      Keep singles out of Jellyfin's Albums: save songs YouTube Music lists as a Single, and playlist songs with no album, straight into the artist's folder (Artist/Title.mp3) with no album tag. EPs and albums keep their own folders.</label>
+      Keep singles out of Jellyfin's Albums: save songs YouTube Music lists as a Single, and playlist songs with no album, straight into the artist's folder (Artist/Title.opus) with no album tag. EPs and albums keep their own folders.</label>
     <p class="muted small">Changing this moves the singles you already have and updates your playlists. YTMLS also puts a small artist.nfo file in those artist folders, because Jellyfin would otherwise show an artist you only have singles from as one album named after the artist.</p>
     <label>Most downloads per run <input type="number" name="max_per_run" min="1" max="2000" value="{{ sync.max_downloads_per_run }}"></label>
-    <p class="muted small">YouTube's streams are already compressed, so 320 kbps is the setting that loses the least extra quality. Spreading a large first sync over several runs is gentler on your account.</p>
+    <p class="muted small">Spreading a large first sync over several runs is gentler on your account.</p>
     <button class="primary">Save</button>
   </form>
 </section>

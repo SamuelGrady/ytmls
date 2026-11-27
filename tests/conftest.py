@@ -94,16 +94,21 @@ class FakeDownloader:
 
     calls: list = []
     fail_ids: set = set()
+    # What YouTube "sends": Opus in WebM (itag 251/774) or AAC in MP4 (itag 140/141).
+    stream = "webm"
 
     def fetch_audio(self, video_id, workdir, cookies_file, premium):
         import subprocess
         FakeDownloader.calls.append((video_id, premium, cookies_file.read_text().count("abc123")))
         if video_id in FakeDownloader.fail_ids:
             raise RuntimeError("ERROR: Video unavailable")
-        out = workdir / f"{video_id}.opus"
+        if FakeDownloader.stream == "m4a":
+            out, codec, desc = workdir / f"{video_id}.m4a", ["-c:a", "aac", "-b:a", "256k"], "141 mp4a.40.2 256kbps"
+        else:
+            out, codec, desc = workdir / f"{video_id}.webm", ["-c:a", "libopus", "-b:a", "160k"], "251 opus 160kbps"
         subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i",
-                        "sine=frequency=440:duration=1", "-c:a", "libopus", str(out)], check=True)
-        return out, "251 opus 160kbps"
+                        "sine=frequency=440:duration=1", *codec, str(out)], check=True)
+        return out, desc
 
 
 class FakePush:
@@ -128,6 +133,7 @@ def reset_downloader():
     FakePush.fail_status = None
     FakeDownloader.calls = []
     FakeDownloader.fail_ids = set()
+    FakeDownloader.stream = "webm"
 
 
 @pytest.fixture

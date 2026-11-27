@@ -5,8 +5,9 @@ import urllib.error
 from pathlib import Path
 
 import pytest
-from mutagen.id3 import ID3
+from mutagen.oggopus import OggOpus
 
+from app import media
 from app.jellyfin import Jellyfin, JellyfinError, normalise_url
 
 from .conftest import COOKIES, FakeYTM, csrf_from
@@ -29,21 +30,39 @@ def music(app) -> Path:
     return app.state.settings.music_dir
 
 
+def test_editing_an_older_mp3_keeps_it_mp3(synced, authed):
+    import subprocess
+    from mutagen.id3 import ID3
+    old = music(synced) / "Artist A" / "Album One" / "01 - First Song.mp3"
+    (music(synced) / "Artist A" / "Album One" / "01 - First Song.opus").unlink()
+    subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i",
+                    "sine=frequency=440:duration=1", "-c:a", "libmp3lame", str(old)], check=True)
+    synced.state.db.execute("UPDATE tracks SET file_path = ? WHERE video_id = 'a1'",
+                            ("Artist A/Album One/01 - First Song.mp3",))
+    csrf = csrf_from(authed.get("/tracks/a1").text)
+    authed.post("/tracks/a1", data={"csrf_token": csrf, "title": "Renamed", "artists": "Artist A",
+                                    "album": "Album One", "album_artist": "Artist A", "track_number": "1",
+                                    "year": "2020"})
+    new = music(synced) / "Artist A" / "Album One" / "01 - Renamed.mp3"
+    assert not old.exists() and new.exists()
+    assert ID3(new)["TIT2"].text == ["Renamed"]
+
+
 def test_edit_track_retags_and_moves(synced, authed):
     csrf = csrf_from(authed.get("/tracks/a1").text)
     r = authed.post("/tracks/a1", data={"csrf_token": csrf, "title": "First Song (Remastered)", "artists": "Artist A",
                                         "album": "Album One", "album_artist": "Artist A", "track_number": "7",
                                         "year": "2021"}, follow_redirects=False)
     assert r.headers["location"] == "/tracks/a1?msg=track_saved"
-    old = music(synced) / "Artist A" / "Album One" / "01 - First Song.mp3"
-    new = music(synced) / "Artist A" / "Album One" / "07 - First Song (Remastered).mp3"
+    old = music(synced) / "Artist A" / "Album One" / "01 - First Song.opus"
+    new = music(synced) / "Artist A" / "Album One" / "07 - First Song (Remastered).opus"
     assert not old.exists() and new.exists()
-    tags = ID3(new)
-    assert tags["TIT2"].text == ["First Song (Remastered)"]
-    assert tags["TRCK"].text == ["7"] and str(tags["TDRC"].text[0]) == "2021"
-    assert tags.getall("APIC")  # existing cover kept
+    tags = OggOpus(new)
+    assert tags["title"] == ["First Song (Remastered)"]
+    assert tags["tracknumber"] == ["7"] and tags["date"][0] == "2021"
+    assert tags.get("metadata_block_picture")  # existing cover kept
     row = synced.state.db.one("SELECT * FROM tracks WHERE video_id = 'a1'")
-    assert row["meta_locked"] == 1 and row["file_path"].endswith("07 - First Song (Remastered).mp3")
+    assert row["meta_locked"] == 1 and row["file_path"].endswith("07 - First Song (Remastered).opus")
     assert "Edited First Song" in authed.get("/history").text
 
 
@@ -51,18 +70,18 @@ def test_edits_survive_the_next_sync(synced):
     synced.state.editor.edit_track("v9", {"title": "My Name", "artists": "B", "album": "Mine", "album_artist": "B",
                                           "track_number": "", "year": ""})
     # Simulate it being re-downloaded later: metadata from YouTube must not overwrite the edit.
-    (music(synced) / "B" / "Mine" / "My Name.mp3").unlink()
+    (music(synced) / "B" / "Mine" / "My Name.opus").unlink()
     synced.state.db.execute("UPDATE tracks SET status = 'removed', file_path = NULL WHERE video_id = 'v9'")
     synced.state.engine.run("manual")
     row = synced.state.db.one("SELECT title, album, file_path FROM tracks WHERE video_id = 'v9'")
-    assert row["title"] == "My Name" and row["file_path"] == "B/Mine/My Name.mp3"
+    assert row["title"] == "My Name" and row["file_path"] == "B/Mine/My Name.opus"
 
 
 def test_playlist_follows_moved_file(synced):
     synced.state.editor.edit_track("a2", {"title": "Renamed", "artists": "Artist A", "album": "Album One",
                                           "album_artist": "Artist A", "track_number": "2", "year": "2020"})
     m3u = (music(synced) / "Playlists" / "Road Trip.m3u8").read_text()
-    assert "02 - Renamed.mp3" in m3u and "Second_Song" not in m3u
+    assert "02 - Renamed.opus" in m3u and "Second_Song" not in m3u
 
 
 def test_cover_upload_and_reset(synced, authed, monkeypatch):
@@ -70,12 +89,12 @@ def test_cover_upload_and_reset(synced, authed, monkeypatch):
     data = {"csrf_token": csrf, "title": "First Song", "artists": "Artist A", "album": "Album One",
             "album_artist": "Artist A", "track_number": "1", "year": "2020"}
     authed.post("/tracks/a1", data=data, files={"cover": ("c.png", io.BytesIO(PNG), "image/png")})
-    f = music(synced) / "Artist A" / "Album One" / "01 - First Song.mp3"
-    assert ID3(f).getall("APIC")[0].mime == "image/png"
+    f = music(synced) / "Artist A" / "Album One" / "01 - First Song.opus"
+    assert media.read_cover(f)[1] == "image/png"
     img = authed.get("/covers/a1")
     assert img.status_code == 200 and img.headers["content-type"] == "image/png"
     authed.post("/tracks/a1", data={**data, "reset_cover": "1"})
-    assert ID3(f).getall("APIC")[0].mime == "image/jpeg"  # back to the (stubbed) YouTube cover
+    assert media.read_cover(f)[1] == "image/jpeg"  # back to the (stubbed) YouTube cover
 
 
 def test_bad_inputs_rejected(synced, authed):
@@ -104,7 +123,7 @@ def test_album_edit_applies_to_all_tracks(synced, authed):
                     follow_redirects=False)
     assert r.headers["location"] == "/items/MPREb_1?msg=album_saved"
     folder = music(synced) / "Artist A" / "Album One (Deluxe)"
-    assert sorted(p.name for p in folder.iterdir()) == ["01 - First Song.mp3", "02 - Second_Song.mp3"]
+    assert sorted(p.name for p in folder.iterdir()) == ["01 - First Song.opus", "02 - Second_Song.opus"]
     assert not (music(synced) / "Artist A" / "Album One").exists()
 
 
@@ -201,8 +220,8 @@ def test_large_cover_upload_accepted(synced, authed):
     r = authed.post("/tracks/a1", data=data, files={"cover": ("c.png", io.BytesIO(big), "image/png")},
                     follow_redirects=False)
     assert r.status_code == 303
-    f = music(synced) / "Artist A" / "Album One" / "01 - First Song.mp3"
-    assert len(ID3(f).getall("APIC")[0].data) == len(big)
+    f = music(synced) / "Artist A" / "Album One" / "01 - First Song.opus"
+    assert len(media.read_cover(f)[0]) == len(big)
     csrf = csrf_from(authed.get("/items/MPREb_1").text)
     r = authed.post("/items/MPREb_1/album", data={"csrf_token": csrf, "album": "Album One",
                                                   "album_artist": "Artist A", "year": "2020"},

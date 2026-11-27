@@ -1,7 +1,7 @@
 """Editing track and album metadata from the dashboard.
 
 Edits are saved in the database (and locked, so a later sync never undoes
-them), written into the MP3's tags, and the file is renamed/moved when the
+them), written into the file's tags, and the file is renamed/moved when the
 fields that make up its path change. Playlists are rewritten to match.
 """
 
@@ -125,9 +125,10 @@ class MetadataEditor:
             else:
                 file_cover = None  # keep whatever the file has
             media.retag(path, meta, file_cover)
-            target = media.track_relpath(meta)
+            suffix = Path(new["file_path"]).suffix
+            target = media.track_relpath(meta, suffix)
             if target.as_posix() != new["file_path"]:
-                target = self.engine.target_path(meta)
+                target = self.engine.target_path(meta, suffix)
                 media.move_track(self.music_dir, new["file_path"], target)
                 self.engine.place_artist_nfo(target, meta)
                 self.db.execute("UPDATE tracks SET file_path = ? WHERE video_id = ?", (target.as_posix(), video_id))

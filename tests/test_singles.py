@@ -2,7 +2,7 @@ import shutil
 from pathlib import Path
 
 import pytest
-from mutagen.id3 import ID3
+from mutagen.oggopus import OggOpus
 
 from app import media
 from app.ytm import LibraryEntry
@@ -25,7 +25,7 @@ def add_release(browse_id, title, kind, artist, tracks):
 
 def set_singles(app, client, on: bool):
     csrf = csrf_from(client.get("/settings").text)
-    data = {"csrf_token": csrf, "interval": "6", "quality": "320", "max_per_run": "200"}
+    data = {"csrf_token": csrf, "interval": "6", "max_per_run": "200"}
     if on:
         data["singles"] = "1"
     r = client.post("/settings/sync", data=data, follow_redirects=False)
@@ -45,9 +45,9 @@ def releases(ready):  # noqa: F811
 def test_singles_use_album_folders_by_default(releases):
     enable(releases, "MPREb_S")
     releases.state.engine.run("manual")
-    f = music(releases) / "Artist C" / "Hit Song" / "01 - Hit Song.mp3"
+    f = music(releases) / "Artist C" / "Hit Song" / "01 - Hit Song.opus"
     assert f.exists()
-    assert ID3(f)["TALB"].text == ["Hit Song"]
+    assert OggOpus(f)["album"] == ["Hit Song"]
     assert not (music(releases) / "Artist C" / "artist.nfo").exists()
 
 
@@ -57,19 +57,19 @@ def test_singles_go_loose_when_on(releases, authed):
     s = releases.state.engine.run("manual")
     assert not s.failed, s
     root = music(releases)
-    single = root / "Artist C" / "Hit Song.mp3"
+    single = root / "Artist C" / "Hit Song.opus"
     assert single.exists()
-    tags = ID3(single)
-    assert "TALB" not in tags and "TRCK" not in tags and "TPOS" not in tags
-    assert tags["TPE2"].text == ["Artist C"] and tags["TIT2"].text == ["Hit Song"]
-    assert tags.getall("APIC"), "cover art stays embedded"
+    tags = OggOpus(single)
+    assert "album" not in tags and "tracknumber" not in tags and "discnumber" not in tags
+    assert tags["albumartist"] == ["Artist C"] and tags["title"] == ["Hit Song"]
+    assert tags.get("metadata_block_picture"), "cover art stays embedded"
     # EPs and albums keep their folders.
-    assert (root / "Artist C" / "Little EP" / "01 - EP One.mp3").exists()
-    assert (root / "Artist A" / "Album One" / "01 - First Song.mp3").exists()
+    assert (root / "Artist C" / "Little EP" / "01 - EP One.opus").exists()
+    assert (root / "Artist A" / "Album One" / "01 - First Song.opus").exists()
     # A playlist song with no album at all is loose too, and the playlist points at it.
-    assert (root / "Artist B" / "Music Video.mp3").exists()
+    assert (root / "Artist B" / "Music Video.opus").exists()
     m3u = (root / "Playlists" / "Road Trip.m3u8").read_text()
-    assert "../Artist B/Music Video.mp3" in m3u
+    assert "../Artist B/Music Video.opus" in m3u
     # Artists you only have singles from still read as artists in Jellyfin.
     nfo = (root / "Artist B" / "artist.nfo").read_text()
     assert "<name>Artist B</name>" in nfo and media.NFO_MARKER in nfo
@@ -81,23 +81,23 @@ def test_turning_on_and_off_moves_existing_files(releases, authed):
     engine = releases.state.engine
     engine.run("manual")
     root = music(releases)
-    old = root / "Artist C" / "Hit Song" / "01 - Hit Song.mp3"
+    old = root / "Artist C" / "Hit Song" / "01 - Hit Song.opus"
     assert old.exists()
 
     assert "singles_on" in set_singles(releases, authed, True)
-    new = root / "Artist C" / "Hit Song.mp3"
+    new = root / "Artist C" / "Hit Song.opus"
     assert new.exists() and not old.exists()
     assert not (root / "Artist C" / "Hit Song").exists(), "empty album folder is removed"
-    assert "TALB" not in ID3(new)
-    assert "../Artist B/Music Video.mp3" in (root / "Playlists" / "Road Trip.m3u8").read_text()
+    assert "album" not in OggOpus(new)
+    assert "../Artist B/Music Video.opus" in (root / "Playlists" / "Road Trip.m3u8").read_text()
     row = releases.state.db.one("SELECT file_path FROM tracks WHERE video_id = 's1'")
-    assert row["file_path"] == "Artist C/Hit Song.mp3"
+    assert row["file_path"] == "Artist C/Hit Song.opus"
 
     assert "singles_off" in set_singles(releases, authed, False)
     assert old.exists() and not new.exists()
-    assert ID3(old)["TALB"].text == ["Hit Song"] and ID3(old)["TRCK"].text == ["1"]
+    assert OggOpus(old)["album"] == ["Hit Song"] and OggOpus(old)["tracknumber"] == ["1"]
     assert not (root / "Artist C" / "artist.nfo").exists(), "YTMLS removes its own artist.nfo"
-    assert "../Artist B/Music Video/Music Video.mp3" in (root / "Playlists" / "Road Trip.m3u8").read_text()
+    assert "../Artist B/Music Video/Music Video.opus" in (root / "Playlists" / "Road Trip.m3u8").read_text()
     # A second sync leaves everything where it is.
     assert engine.run("manual").relocated == 0
 
@@ -110,7 +110,7 @@ def test_album_release_wins_over_single(releases, authed):
     releases.state.engine.run("manual")
     row = releases.state.db.one("SELECT release_type FROM tracks WHERE video_id = 'a1'")
     assert row["release_type"] == "album"
-    assert not (music(releases) / "Artist A" / "First Song.mp3").exists()
+    assert not (music(releases) / "Artist A" / "First Song.opus").exists()
 
 
 def test_old_cache_entries_learn_their_release_type(releases, authed):
@@ -124,7 +124,7 @@ def test_old_cache_entries_learn_their_release_type(releases, authed):
     set_singles(releases, authed, True)
     enable(releases, "PL1")
     releases.state.engine.run("manual")
-    assert (music(releases) / "Artist C" / "Hit Song.mp3").exists()
+    assert (music(releases) / "Artist C" / "Hit Song.opus").exists()
 
 
 def test_editing_a_loose_single_keeps_it_loose(releases, authed):
@@ -134,9 +134,9 @@ def test_editing_a_loose_single_keeps_it_loose(releases, authed):
     releases.state.editor.edit_track("s1", {"title": "Hit Song (Radio Edit)", "artists": "Artist C",
                                            "album": "Hit Song", "album_artist": "Artist C",
                                            "track_number": "1", "year": "2024"})
-    f = music(releases) / "Artist C" / "Hit Song (Radio Edit).mp3"
+    f = music(releases) / "Artist C" / "Hit Song (Radio Edit).opus"
     assert f.exists()
-    assert "TALB" not in ID3(f)
+    assert "album" not in OggOpus(f)
 
 
 def test_artist_nfo_escapes_names(tmp_path):

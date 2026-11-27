@@ -9,7 +9,7 @@ YTMLS **only reads** your YouTube Music account. It never likes, adds, removes o
 | Step | What it covers | State |
 | --- | --- | --- |
 | 1. Foundation | Container, secure dashboard login, encrypted YouTube cookies, library list with sync checkboxes | Done |
-| 2. Sync engine | Scheduled downloads (every 4 to 6 h), MP3 with tags and cover art, Jellyfin folder layout, `.m3u8` playlists, removals waiting for confirmation, optional Premium quality | Done |
+| 2. Sync engine | Scheduled downloads (every 4 to 6 h), original-quality audio with tags and cover art, Jellyfin folder layout, `.m3u8` playlists, removals waiting for confirmation, optional Premium quality | Done |
 | 3. Notifications and history | Browser push for new library items, sync summaries and removals waiting for you, plus a full change history | Done |
 | 4. Metadata editor | Edit tags and cover art in the dashboard, optional Jellyfin rescan, security checklist | Done |
 
@@ -47,7 +47,7 @@ After that YTMLS keeps the session alive on its own. It saves the refreshed cook
   3. Downloads anything missing.
   4. Writes the playlist files.
 - New songs added to a checked playlist are downloaded automatically.
-- **Files:** `Album Artist/Album/NN - Title.mp3` in your music folder, with title, artists, album artist, album, track number, year and cover art embedded. Songs without an album, such as music videos, are filed as singles: `Artist/Title/Title.mp3`. Turn on **Keep singles out of Jellyfin's Albums** in Settings to save singles (releases YouTube Music lists as a Single, plus songs with no album) as `Artist/Title.mp3` with no album tag instead, so they don't each show up as an album in Jellyfin. YTMLS then also writes a small `artist.nfo` in those artist folders, because Jellyfin otherwise treats a folder of loose songs as one album.
+- **Files:** `Album Artist/Album/NN - Title.opus` in your music folder (`.m4a` when the stream is AAC), with title, artists, album artist, album, track number, year and cover art embedded. Songs without an album, such as music videos, are filed as singles: `Artist/Title/Title.opus`. Turn on **Keep singles out of Jellyfin's Albums** in Settings to save singles (releases YouTube Music lists as a Single, plus songs with no album) as `Artist/Title.opus` with no album tag instead, so they don't each show up as an album in Jellyfin. YTMLS then also writes a small `artist.nfo` in those artist folders, because Jellyfin otherwise treats a folder of loose songs as one album.
 - **Playlists:** each checked playlist becomes `Playlists/<name>.m3u8`, which points at the album files. A song that's in several playlists is stored only once.
 - **Removals never happen on their own.** These all add a request to the **Removals** page:
   - a song leaves a playlist
@@ -56,8 +56,10 @@ After that YTMLS keeps the session alive on its own. It saves the refreshed cook
 
   You choose **Delete** (the file goes, and empty folders are cleaned up) or **Keep** (the file stays and you won't be asked again).
 - **Quality:**
-  - YTMLS takes the best audio stream YouTube offers and encodes it to MP3, 320 kbps by default. V0, 256 and 192 are also available.
-  - With **Premium quality** turned on, it asks for the 256 kbps AAC stream that Premium accounts get. YouTube's streams are already lossy, so 320 kbps is the setting that loses the least extra quality.
+  - YTMLS saves the best audio stream YouTube Music offers your account exactly as it arrives, with no re-encoding. It only moves the stream into a container that holds tags. Without Premium that's Opus at about 130 to 160 kbps, saved as `.opus`. No tool can get more than that from a free account, and converting it to a higher-bitrate MP3 would only add a second lossy step and make the file bigger.
+  - With **Premium quality** turned on, it asks for the 256 kbps streams that Premium accounts get: Opus (`.opus`) when offered, otherwise AAC (`.m4a`). Without Premium it falls back to the best stream offered.
+  - Jellyfin plays `.opus` and `.m4a` and converts them on the fly for any player that can't.
+  - MP3s downloaded by older versions stay as they are. Tag edits and moves keep working on them.
 - **Pace:** downloads are spaced a few seconds apart, and at most 200 run per sync (adjustable). A large first sync spreads over several runs.
 - **Failures:** a failed download is retried on later runs, up to 5 times. You can retry it sooner from the album or playlist's page.
 - **Read-only:** yt-dlp runs with `mark_watched` off, so nothing appears in your YouTube watch history.
@@ -75,7 +77,7 @@ Push notifications need HTTPS, so turn them on while using your Cloudflare Tunne
 ## Editing metadata
 
 - **Tracks** lists every downloaded song, with search. Open one to change its title, artists, album, album artist, track number, year or cover art (JPEG or PNG).
-- Saving rewrites the MP3's tags. If the album artist, album, track number or title changed, it also renames or moves the file to match, and updates every playlist file that includes it.
+- Saving rewrites the file's tags. If the album artist, album, track number or title changed, it also renames or moves the file to match, and updates every playlist file that includes it.
 - On a synced album's page, **Edit album details** changes the album name, album artist, year or cover for every track at once. Use it to fix albums Jellyfin splits or groups wrongly.
 - Edited tracks are marked **edited**, and later syncs never overwrite your changes.
 - Edits wait if a sync is running.
