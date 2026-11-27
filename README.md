@@ -47,7 +47,7 @@ After that YTMLS keeps the session alive on its own. It saves the refreshed cook
   3. Downloads anything missing.
   4. Writes the playlist files.
 - New songs added to a checked playlist are downloaded automatically.
-- **Files:** `Album Artist/Album/NN - Title.mp3` in your music folder, with title, artists, album artist, album, track number, year and cover art embedded. Songs without an album, such as music videos, are filed as singles: `Artist/Title/Title.mp3`.
+- **Files:** `Album Artist/Album/NN - Title.mp3` in your music folder, with title, artists, album artist, album, track number, year and cover art embedded. Songs without an album, such as music videos, are filed as singles: `Artist/Title/Title.mp3`. Turn on **Keep singles out of Jellyfin's Albums** in Settings to save singles (releases YouTube Music lists as a Single, plus songs with no album) as `Artist/Title.mp3` with no album tag instead, so they don't each show up as an album in Jellyfin. YTMLS then also writes a small `artist.nfo` in those artist folders, because Jellyfin otherwise treats a folder of loose songs as one album.
 - **Playlists:** each checked playlist becomes `Playlists/<name>.m3u8`, which points at the album files. A song that's in several playlists is stored only once.
 - **Removals never happen on their own.** These all add a request to the **Removals** page:
   - a song leaves a playlist

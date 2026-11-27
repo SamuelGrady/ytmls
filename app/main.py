@@ -56,6 +56,12 @@ MESSAGES = {
     "sync_started": "Sync started. This page updates as it runs.",
     "sync_busy": "A sync is already running.",
     "sync_saved": "Sync settings saved.",
+    "singles_on": "Sync settings saved. Singles now go straight into their artist's folder, and the ones "
+                  "already downloaded were moved. Playlists were updated to match.",
+    "singles_off": "Sync settings saved. Singles go back into their own album folders, and the ones "
+                   "already downloaded were moved. Playlists were updated to match.",
+    "singles_later": "Sync settings saved. A sync is running, so files already downloaded will be moved "
+                     "at the start of the next sync.",
     "removals_done": "Done.",
     "push_test": "Test notification sent to every subscribed device.",
     "push_removed": "Device removed.",
@@ -126,7 +132,7 @@ def create_app(
     editor = MetadataEditor(db, engine, settings.music_dir)
 
     def after_sync(status: str, summary: SyncSummary, error: str | None) -> None:
-        if summary.downloaded and db.get_setting("jellyfin_auto") != "0":
+        if (summary.downloaded or summary.relocated) and db.get_setting("jellyfin_auto") != "0":
             jellyfin.request_refresh(delay=5)
         notifier.new_library_items(summary.library_new)
         notifier.sync_finished(status, summary.headline(), summary.detail_lines(include_library=False),
@@ -578,7 +584,8 @@ def create_app(
 
     @app.post("/settings/sync")
     def settings_sync(request: Request, csrf_token: str = Form(""), interval: str = Form("6"),
-                      quality: str = Form("320"), premium: str = Form(""), max_per_run: str = Form("200")):
+                      quality: str = Form("320"), premium: str = Form(""), max_per_run: str = Form("200"),
+                      singles: str = Form("")):
         s = require(request)
         require_csrf(request, s, csrf_token)
         try:
@@ -593,9 +600,22 @@ def create_app(
         db.set_setting("mp3_quality", quality)
         db.set_setting("premium_quality", "1" if premium else "0")
         db.set_setting("max_downloads_per_run", str(per_run))
+        was_loose = get_option(db, "singles_loose") == "1"
+        db.set_setting("singles_loose", "1" if singles else "0")
         db.log_event("settings", f"Sync settings: every {hours:g}h, MP3 {quality}, "
-                                 f"Premium quality {'on' if premium else 'off'}, up to {per_run} downloads per run")
-        return RedirectResponse("/settings?msg=sync_saved#sync", status_code=303)
+                                 f"Premium quality {'on' if premium else 'off'}, up to {per_run} downloads per run, "
+                                 f"singles {'kept out of Albums' if singles else 'in album folders'}")
+        msg = "sync_saved"
+        if bool(singles) != was_loose:
+            try:
+                moved = engine.relayout()
+            except SyncBusy:
+                msg = "singles_later"
+            else:
+                msg = "singles_on" if singles else "singles_off"
+                if moved and db.get_setting("jellyfin_auto") != "0":
+                    jellyfin.request_refresh()
+        return RedirectResponse(f"/settings?msg={msg}#sync", status_code=303)
 
     # ------------------------------------------------------------ push notifications
 
@@ -996,7 +1016,7 @@ HISTORY_FILTERS = {
     "all": [],
     "syncs": ["sync"],
     "library": ["library"],
-    "tracks": ["tracks", "download"],
+    "tracks": ["tracks", "download", "layout"],
     "removals": ["removal"],
     "selection": ["selection"],
     "account": ["security", "settings"],
