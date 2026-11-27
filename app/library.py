@@ -16,6 +16,7 @@ class RefreshResult:
     removed: list[str] = field(default_factory=list)  # titles
     returned: list[str] = field(default_factory=list)  # titles
     total: int = 0
+    first_import: bool = False
 
     def summary(self) -> str:
         parts = [f"{self.total} items in library"]
@@ -33,8 +34,8 @@ def refresh_library(db: Database, source: LibrarySource) -> RefreshResult:
     are marked ``removed_at`` so the removal can be confirmed later."""
     entries = source.library_albums() + source.library_playlists()
     now = time.time()
-    result = RefreshResult(total=len(entries))
     first_refresh = db.get_setting("library_last_refresh") is None
+    result = RefreshResult(total=len(entries), first_import=first_refresh)
     seen: set[str] = set()
 
     with db.transaction():

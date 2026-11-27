@@ -2,14 +2,40 @@
 {% block title %}History{% endblock %}
 {% block content %}
 <h1>History</h1>
-{% if events %}
-<ol class="events">
-  {% for e in events %}
-  <li><time class="muted small" title="{{ e.ts|datetime }}">{{ e.ts|datetime }}</time>
-      <span class="badge kind-{{ e.kind }}">{{ e.kind }}</span> {{ e.message }}</li>
+<p class="muted small">Every change YTMLS makes, and every choice you make, is recorded here.</p>
+<div class="tabs history-filters">
+  {% for f in filters %}
+  <a class="tab" href="/history{% if f != 'all' %}?kind={{ f }}{% endif %}" aria-selected="{{ 'true' if f == kind else 'false' }}">{{ f|capitalize }}</a>
   {% endfor %}
-</ol>
+</div>
+{% if days %}
+  {% for day in days %}
+  <h2 class="day">{{ day.label }}</h2>
+  <ol class="events">
+    {% for e in day.events %}
+    <li class="event kind-{{ e.kind }}">
+      <time class="muted small" title="{{ e.ts|datetime }}">{{ e.ts|clock }}</time>
+      <span class="badge">{{ e.kind }}</span>
+      {% if e.sections or e.detail %}
+      <details>
+        <summary>{{ e.message }}</summary>
+        {% if e.detail %}<p class="muted small"><code>{{ e.detail }}</code></p>{% endif %}
+        {% for title, entries in e.sections %}
+          <div class="section"><strong class="small">{{ title }}</strong>
+            <ul class="small">{% for x in entries[:100] %}<li>{{ x }}</li>{% endfor %}
+              {% if entries|length > 100 %}<li class="muted">and {{ entries|length - 100 }} more</li>{% endif %}</ul>
+          </div>
+        {% endfor %}
+      </details>
+      {% else %}
+      <span>{{ e.message }}</span>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+  {% endfor %}
+  {% if older %}<p><a href="/history?{% if kind != 'all' %}kind={{ kind }}&amp;{% endif %}before={{ older }}">Older entries →</a></p>{% endif %}
 {% else %}
-<p class="muted">Nothing has happened yet.</p>
+<p class="muted">Nothing here yet.</p>
 {% endif %}
 {% endblock %}

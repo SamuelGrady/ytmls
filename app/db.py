@@ -122,6 +122,19 @@ MIGRATIONS: list[str] = [
     );
     ALTER TABLE library_items ADD COLUMN playlist_file TEXT;
     """,
+    # 3: push notifications
+    """
+    CREATE TABLE push_subscriptions (
+        id INTEGER PRIMARY KEY,
+        endpoint TEXT NOT NULL UNIQUE,
+        p256dh TEXT NOT NULL,
+        auth TEXT NOT NULL,
+        label TEXT,
+        created_at REAL NOT NULL,
+        last_ok REAL,
+        failures INTEGER NOT NULL DEFAULT 0
+    );
+    """,
 ]
 
 
