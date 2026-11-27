@@ -112,6 +112,18 @@ class SyncBusy(Exception):
     pass
 
 
+class _Release:
+    def __init__(self, lock: threading.Lock):
+        self.lock = lock
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.lock.release()
+        return False
+
+
 class SyncEngine:
     def __init__(
         self,
@@ -130,6 +142,7 @@ class SyncEngine:
         self.source_factory = source_factory
         self.downloader = downloader
         self.sleep = sleep
+        self.covers_dir = tmp_root.parent / "covers"
         self._lock = threading.Lock()
         self.progress: dict[str, Any] = {}
         # Called after every run with (status, summary, error).
@@ -138,6 +151,12 @@ class SyncEngine:
     @property
     def running(self) -> bool:
         return self._lock.locked()
+
+    def exclusive(self):
+        """Hold the sync lock while editing files, so a sync can't run at the same time."""
+        if not self._lock.acquire(blocking=False):
+            raise SyncBusy()
+        return _Release(self._lock)
 
     # ------------------------------------------------------------ run
 
@@ -266,7 +285,7 @@ class SyncEngine:
 
     def _upsert_track(self, meta: TrackMeta, duration: int | None) -> None:
         now = time.time()
-        row = self.db.one("SELECT status FROM tracks WHERE video_id = ?", (meta.video_id,))
+        row = self.db.one("SELECT status, meta_locked FROM tracks WHERE video_id = ?", (meta.video_id,))
         if row is None:
             self.db.execute(
                 "INSERT INTO tracks(video_id, title, artists, album, album_artist, track_number, year, duration, "
@@ -274,8 +293,9 @@ class SyncEngine:
                 (meta.video_id, meta.title, meta.artists, meta.album, meta.album_artist, meta.track_number,
                  meta.year, duration, meta.cover_url, now),
             )
-        elif row["status"] != "downloaded":
-            # Downloaded files keep the metadata they were written with (editable in the dashboard).
+        elif row["status"] != "downloaded" and not row["meta_locked"]:
+            # Downloaded files keep the metadata they were written with, and tracks you
+            # edited in the dashboard keep your edits.
             self.db.execute(
                 "UPDATE tracks SET title = ?, artists = ?, album = ?, album_artist = ?, track_number = ?, "
                 "year = ?, duration = ?, cover_url = ?, updated_at = ? WHERE video_id = ?",
@@ -443,6 +463,20 @@ class SyncEngine:
 
     # ------------------------------------------------------------ downloads
 
+    def _custom_cover(self, name: str | None) -> tuple[bytes, str] | None:
+        if not name:
+            return None
+        path = self.covers_dir / name
+        try:
+            data = path.read_bytes()
+        except OSError:
+            return None
+        mime = media.sniff_image(data)
+        return (data, mime) if mime else None
+
+    def target_path(self, meta: TrackMeta) -> Path:
+        return self._target_path(meta)
+
     def _target_path(self, meta: TrackMeta) -> Path:
         rel = media.track_relpath(meta)
         clash = self.db.one("SELECT video_id FROM tracks WHERE file_path = ? AND video_id != ?",
@@ -481,7 +515,8 @@ class SyncEngine:
                 rel = self._target_path(meta)
                 try:
                     produce_track(self.downloader, meta, self.music_dir, rel, cookies_file,
-                                  premium=premium, quality=quality, tmp_root=self.tmp_root)
+                                  premium=premium, quality=quality, tmp_root=self.tmp_root,
+                                  cover_override=self._custom_cover(t["custom_cover"]))
                 except Exception as exc:
                     consecutive += 1
                     msg = str(exc).splitlines()[0][:400] if str(exc) else type(exc).__name__
@@ -513,6 +548,9 @@ class SyncEngine:
             self.db.log_event("download", f"{len(summary.failed)} downloads failed", json.dumps(summary.failed))
 
     # ------------------------------------------------------------ playlists
+
+    def rewrite_playlists(self) -> None:
+        self._write_playlists(SyncSummary())
 
     def _write_playlists(self, summary: SyncSummary) -> None:
         for p in self.db.all("SELECT id, title, playlist_file FROM library_items "

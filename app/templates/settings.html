@@ -3,6 +3,20 @@
 {% block content %}
 <h1>Settings</h1>
 
+<section class="card" id="checklist">
+  <h2>Security checklist</h2>
+  <p class="muted small">Since this dashboard is on the internet, check these off. Items marked optional are extra layers.</p>
+  <ul class="checklist">
+    {% for c in checklist %}
+    <li class="{{ 'ok' if c.ok else ('opt' if c.optional else 'todo') }}">
+      <span class="mark" aria-hidden="true">{{ '✓' if c.ok else ('○' if c.optional else '!') }}</span>
+      <span><strong>{{ c.label }}</strong>{% if c.optional and not c.ok %} <span class="muted small">(optional)</span>{% endif %}
+      {% if not c.ok %}<br><span class="muted small">{{ c.fix }}</span>{% endif %}</span>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+
 <section class="card" id="youtube">
   <h2>YouTube Music account</h2>
   <p class="muted small">YTMLS only reads your library. It never changes anything on your YouTube or Google account. Cookies are stored encrypted.</p>
@@ -81,6 +95,28 @@
       Skip the after-sync notification when nothing changed</label>
     <button>Save</button>
   </form>
+</section>
+
+<section class="card" id="jellyfin">
+  <h2>Jellyfin</h2>
+  <p class="muted small">Optional. YTMLS can ask Jellyfin to rescan right after it adds, edits or deletes files, so changes show up without waiting for Jellyfin's own schedule.</p>
+  {% if jf_error %}<p class="notice err">{{ jf_error }}</p>{% endif %}
+  {% if jellyfin_last and not jellyfin_last.ok %}<p class="notice err">Last rescan failed: {{ jellyfin_last.error }}</p>{% endif %}
+  <form method="post" action="/settings/jellyfin" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <label>Jellyfin address <input name="url" value="{{ jellyfin_url or '' }}" placeholder="http://jellyfin:8096" required></label>
+    <label>API key {% if jellyfin_has_key %}<span class="muted small">(saved; leave blank to keep it)</span>{% endif %}
+      <input name="api_key" autocomplete="off" {% if not jellyfin_has_key %}required{% endif %}>
+      <span class="muted small">Create one in Jellyfin: Dashboard → API Keys → +.</span></label>
+    <label class="checkbox"><input type="checkbox" name="auto" value="1" {% if jellyfin_auto %}checked{% endif %}> Rescan automatically after changes</label>
+    <button class="primary">Save and test</button>
+  </form>
+  {% if jellyfin_url and jellyfin_has_key %}
+  <div class="actions">
+    <form method="post" action="/settings/jellyfin/refresh" class="inline"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button>Rescan now</button></form>
+    <form method="post" action="/settings/jellyfin/remove" class="inline"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="link danger-link">Disconnect</button></form>
+  </div>
+  {% endif %}
 </section>
 
 <section class="card" id="password">

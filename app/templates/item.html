@@ -5,6 +5,21 @@
 <h1>{{ item.title }}</h1>
 <p class="muted">{{ 'Album' if item.kind == 'album' else 'Playlist' }}{% if item.subtitle %} · {{ item.subtitle }}{% endif %}
   · Sync {{ 'on' if item.sync_enabled else 'off' }}{% if item.playlist_file %} · <code>{{ item.playlist_file }}</code>{% endif %}</p>
+{% if error %}<p class="notice err">{{ error }}</p>{% endif %}
+{% if item.kind == 'album' and tracks %}
+<details class="card">
+  <summary>Edit album details</summary>
+  <p class="muted small">Applies to every track of this album and renames the folders to match. Your edits are kept even if YouTube Music changes its info.</p>
+  <form method="post" action="/items/{{ item.id|urlencode }}/album" enctype="multipart/form-data" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <label>Album <input name="album" value="{{ album.album or '' }}" required maxlength="300"></label>
+    <label>Album artist <input name="album_artist" value="{{ album.album_artist or '' }}" required maxlength="300"></label>
+    <label>Year <input name="year" value="{{ album.year or '' }}" inputmode="numeric" pattern="[0-9]{4}" maxlength="4"></label>
+    <label>Cover art (JPEG or PNG, optional) <input type="file" name="cover" accept="image/jpeg,image/png"></label>
+    <button class="primary">Save album</button>
+  </form>
+</details>
+{% endif %}
 {% if tracks %}
 <table class="tracks">
   <thead><tr><th>#</th><th>Title</th><th>Status</th></tr></thead>
@@ -12,7 +27,7 @@
   {% for t in tracks %}
   <tr class="{% if t.link_removed %}removed{% endif %}">
     <td class="muted">{{ loop.index }}</td>
-    <td><span class="title">{{ t.title }}</span><br><span class="muted small">{{ t.artists }}{% if t.album %} · {{ t.album }}{% endif %}</span>
+    <td><a class="title" href="/tracks/{{ t.video_id|urlencode }}?back=/items/{{ item.id|urlencode }}">{{ t.title }}</a>{% if t.meta_locked %} <span class="badge" title="You edited this track">edited</span>{% endif %}<br><span class="muted small">{{ t.artists }}{% if t.album %} · {{ t.album }}{% endif %}</span>
       {% if t.file_path %}<br><code class="small">{{ t.file_path }}</code>{% endif %}</td>
     <td>
       {% if t.link_removed %}<span class="badge warn">removed from {{ item.kind }}</span>
