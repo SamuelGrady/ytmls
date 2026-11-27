@@ -43,7 +43,8 @@ The dashboard is built to be reachable from the internet, but put more than one 
 - **Publish no ports**, or bind them to `127.0.0.1` as `compose.yaml` does, so the tunnel is the only way in. `YTMLS_TRUST_PROXY_HEADERS=true` is safe only in that case, because it trusts `CF-Connecting-IP` for lockouts.
 - **Cloudflare Access (recommended):** add a free Access application for the hostname with an email one-time-PIN or SSO policy. Then strangers never reach the login page at all.
 - **Turn on 2FA** in Settings right after setup.
-- Leave `YTMLS_COOKIE_SECURE=true`, since the tunnel serves HTTPS.
+- Set `YTMLS_PUBLIC_URL` to your tunnel address. If you only ever use the tunnel, you can also set `YTMLS_COOKIE_SECURE=true`.
+- If you see "Request blocked", the page explains which check failed. The container log has the details too.
 
 ### What the app itself does
 
@@ -65,7 +66,8 @@ The dashboard is built to be reachable from the internet, but put more than one 
 | --- | --- | --- |
 | `YTMLS_DATA_DIR` | `/data` | Database and key file |
 | `YTMLS_MUSIC_DIR` | `/music` | Jellyfin music folder |
-| `YTMLS_COOKIE_SECURE` | `true` | Set to `false` only for plain-http local testing |
+| `YTMLS_COOKIE_SECURE` | `auto` | `auto` marks cookies Secure when the request came over HTTPS (the tunnel). `true` forces it, so plain-http access won't work |
+| `YTMLS_PUBLIC_URL` | (none) | Your tunnel address, e.g. `https://music.example.com`. Accepted as a valid form origin |
 | `YTMLS_TRUST_PROXY_HEADERS` | `false` | Use `CF-Connecting-IP` / `X-Forwarded-For` as the client IP |
 | `YTMLS_SECRET_KEY` / `YTMLS_SECRET_KEY_FILE` | (generated) | Encryption key for stored secrets |
 | `YTMLS_SESSION_IDLE_HOURS` | `72` | Idle session timeout |
@@ -89,5 +91,5 @@ docker compose run --rm --entrypoint python ytmls -c \
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
 pytest
-YTMLS_DATA_DIR=./data YTMLS_COOKIE_SECURE=false uvicorn app.main:get_app --factory --reload
+YTMLS_DATA_DIR=./data uvicorn app.main:get_app --factory --reload
 ```

@@ -1,0 +1,9 @@
+{% extends "auth_base.html" %}
+{% block title %}Request blocked{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Request blocked</h1>
+  <p>{{ why }}</p>
+  <p><a href="{{ back }}">Go back</a></p>
+</div>
+{% endblock %}
