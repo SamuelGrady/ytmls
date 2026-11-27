@@ -144,6 +144,12 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE tracks ADD COLUMN release_type TEXT;  -- album | ep | single | none (no album at all)
     """,
+    # 6: each artist on their own, so tags hold several artists and folders use the first
+    """
+    ALTER TABLE tracks ADD COLUMN artist_names TEXT;        -- JSON list, NULL until known
+    ALTER TABLE tracks ADD COLUMN album_artist_names TEXT;  -- JSON list, NULL until known
+    ALTER TABLE tracks ADD COLUMN tags_rev INTEGER NOT NULL DEFAULT 0;  -- tag layout the file was written with
+    """,
 ]
 
 

@@ -16,10 +16,11 @@
 <form method="post" action="/tracks/{{ t.video_id|urlencode }}" enctype="multipart/form-data" class="card stack">
   <input type="hidden" name="csrf_token" value="{{ csrf }}">
   <label>Title <input name="title" value="{{ t.title }}" required maxlength="300"></label>
-  <label>Artists <input name="artists" value="{{ t.artists or '' }}" maxlength="300"></label>
+  <label>Artists <input name="artists" value="{{ t.artist_names|names(t.artists) }}" maxlength="300">
+    <span class="muted small">Separate several artists with ; so Jellyfin lists each one.</span></label>
   <label>Album <input name="album" value="{{ t.album or '' }}" required maxlength="300"></label>
-  <label>Album artist <input name="album_artist" value="{{ t.album_artist or '' }}" required maxlength="300">
-    <span class="muted small">Jellyfin groups albums by this. The file lives in a folder named after it.</span></label>
+  <label>Album artist <input name="album_artist" value="{{ t.album_artist_names|names(t.album_artist) }}" required maxlength="300">
+    <span class="muted small">Jellyfin groups albums by this; separate several with ;. The file lives in a folder named after the first one.</span></label>
   <div class="row2">
     <label>Track number <input name="track_number" value="{{ t.track_number or '' }}" inputmode="numeric" pattern="[0-9]{0,3}"></label>
     <label>Year <input name="year" value="{{ t.year or '' }}" inputmode="numeric" pattern="[0-9]{4}" maxlength="4"></label>
