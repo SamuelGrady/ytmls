@@ -62,7 +62,9 @@ class LoginRequired(Exception):
 
 
 class Forbidden(Exception):
-    pass
+    def __init__(self, reason: str, detail: str = ""):
+        self.reason = reason
+        self.detail = detail
 
 
 def create_app(
@@ -131,9 +133,18 @@ def create_app(
                 return xff.split(",")[0].strip()[:64]
         return request.client.host if request.client else "unknown"
 
-    def set_cookie(resp: Response, name: str, value: str, max_age: int | None) -> None:
+    def is_https(request: Request) -> bool:
+        if request.url.scheme == "https":
+            return True
+        proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+        return proto == "https" or '"scheme":"https"' in request.headers.get("cf-visitor", "").replace(" ", "")
+
+    def cookie_secure(request: Request) -> bool:
+        return settings.cookie_secure if settings.cookie_secure is not None else is_https(request)
+
+    def set_cookie(request: Request, resp: Response, name: str, value: str, max_age: int | None) -> None:
         resp.set_cookie(
-            name, value, max_age=max_age, httponly=True, secure=settings.cookie_secure,
+            name, value, max_age=max_age, httponly=True, secure=cookie_secure(request),
             samesite="strict", path="/",
         )
 
@@ -148,22 +159,33 @@ def create_app(
 
     def check_origin(request: Request) -> None:
         origin = request.headers.get("origin")
-        if origin and origin != "null":
-            if urlsplit(origin).netloc != request.headers.get("host", ""):
-                raise Forbidden()
+        if not origin or origin == "null":
+            return
+        allowed = {request.headers.get("host", "").lower()}
+        fwd = request.headers.get("x-forwarded-host")
+        if fwd:
+            allowed.add(fwd.split(",")[0].strip().lower())
+        if settings.public_url:
+            allowed.add(urlsplit(settings.public_url).netloc.lower())
+        got = urlsplit(origin).netloc.lower()
+        if got not in allowed:
+            raise Forbidden("origin", f"form posted from {got}, but this server answers as {', '.join(sorted(allowed))}")
 
     def require_csrf(request: Request, s: Session, token: str | None) -> None:
         check_origin(request)
         if not security.csrf_matches(s.csrf_token, token):
-            raise Forbidden()
+            raise Forbidden("token")
 
     def pre_token(request: Request) -> str:
         return request.cookies.get(PRE_COOKIE) or secrets.token_urlsafe(24)
 
     def require_pre_csrf(request: Request, token: str) -> None:
         check_origin(request)
-        if not security.csrf_matches(request.cookies.get(PRE_COOKIE), token):
-            raise Forbidden()
+        cookie = request.cookies.get(PRE_COOKIE)
+        if cookie is None:
+            raise Forbidden("no_cookie")
+        if not security.csrf_matches(cookie, token):
+            raise Forbidden("token")
 
     def render(request: Request, name: str, ctx: dict[str, Any], status: int = 200,
                pre: str | None = None) -> HTMLResponse:
@@ -174,7 +196,7 @@ def create_app(
                 "SELECT COUNT(*) AS n FROM removals WHERE decision IS NULL")["n"])
         resp = templates.TemplateResponse(request, name, ctx, status_code=status)
         if pre:
-            set_cookie(resp, PRE_COOKIE, pre, 3600)
+            set_cookie(request, resp, PRE_COOKIE, pre, 3600)
         return resp
 
     def user_row(user_id: int):
@@ -189,7 +211,7 @@ def create_app(
         token, _ = sessions.create(user_id, stage, client_ip(request), request.headers.get("user-agent"))
         resp = RedirectResponse(to, status_code=303)
         max_age = security.PENDING_2FA_SECONDS if stage == "pending_2fa" else settings.session_max_days * 86400
-        set_cookie(resp, SESSION_COOKIE, token, max_age)
+        set_cookie(request, resp, SESSION_COOKIE, token, max_age)
         resp.delete_cookie(PRE_COOKIE, path="/")
         return resp
 
@@ -225,7 +247,7 @@ def create_app(
         resp.headers["Referrer-Policy"] = "no-referrer"
         resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
         resp.headers["Cross-Origin-Opener-Policy"] = "same-origin"
-        if settings.cookie_secure:
+        if is_https(request):
             resp.headers["Strict-Transport-Security"] = "max-age=31536000"
         if not request.url.path.startswith("/static"):
             resp.headers["Cache-Control"] = "no-store"
@@ -240,8 +262,23 @@ def create_app(
 
     @app.exception_handler(Forbidden)
     async def _forbidden(request: Request, exc: Forbidden):
-        return Response("Forbidden: the form expired or came from another site. Reload and try again.",
-                        status_code=403)
+        if exc.reason == "no_cookie":
+            if settings.cookie_secure and not is_https(request):
+                why = ("Your browser didn't send back its security cookie. This page was opened over plain "
+                       "http, but YTMLS_COOKIE_SECURE is \"true\", so the browser only keeps the cookie on https. "
+                       "Use the https address, or set YTMLS_COOKIE_SECURE to \"auto\".")
+            else:
+                why = ("Your browser didn't send back its security cookie. Check that cookies are allowed for "
+                       "this site, then reload the page and try again.")
+        elif exc.reason == "origin":
+            why = ("The form was sent from a different address than this server expected "
+                   f"({exc.detail}). If you reach YTMLS through a tunnel or proxy, set YTMLS_PUBLIC_URL to the "
+                   "address you use, for example https://music.example.com.")
+        else:
+            why = "The form expired, for example because you signed in again in another tab. Reload and try again."
+        log.warning("Rejected %s %s: %s %s", request.method, request.url.path, exc.reason, exc.detail)
+        back = request.url.path if request.url.path in {"/login", "/setup"} else "/"
+        return templates.TemplateResponse(request, "forbidden.html", {"why": why, "back": back}, status_code=403)
 
     # ------------------------------------------------------------ public
 

@@ -14,6 +14,13 @@ def _bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _tristate(name: str) -> bool | None:
+    raw = (os.environ.get(name) or "auto").strip().lower()
+    if raw == "auto":
+        return None
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _int(name: str, default: int) -> int:
     raw = os.environ.get(name)
     return int(raw) if raw else default
@@ -27,12 +34,16 @@ class Settings:
     # When unset, a key file is generated in data_dir on first start.
     secret_key: str | None
     secret_key_file: Path | None
-    # Send cookies with the Secure flag. Keep on when served over HTTPS
-    # (e.g. Cloudflare Tunnel). Turn off only for plain-http local testing.
-    cookie_secure: bool
+    # Send cookies with the Secure flag. None ("auto") sets it whenever the
+    # request arrived over HTTPS (directly or via the tunnel's X-Forwarded-Proto),
+    # so the same container works over the tunnel and over plain http on the LAN.
+    cookie_secure: bool | None
     # Trust CF-Connecting-IP / X-Forwarded-For for the client IP. Only enable
     # when the app is reachable exclusively through your proxy/tunnel.
     trust_proxy_headers: bool
+    # Public address, e.g. https://music.example.com. Used to accept form posts
+    # whose Origin is the tunnel hostname even if the proxy rewrites Host.
+    public_url: str | None
     session_idle_hours: int
     session_max_days: int
     # Lockout policy
@@ -53,7 +64,8 @@ def load_settings() -> Settings:
         music_dir=Path(os.environ.get("YTMLS_MUSIC_DIR", "/music")),
         secret_key=os.environ.get("YTMLS_SECRET_KEY") or None,
         secret_key_file=Path(key_file) if key_file else None,
-        cookie_secure=_bool("YTMLS_COOKIE_SECURE", True),
+        cookie_secure=_tristate("YTMLS_COOKIE_SECURE"),
+        public_url=(os.environ.get("YTMLS_PUBLIC_URL") or "").strip().rstrip("/") or None,
         trust_proxy_headers=_bool("YTMLS_TRUST_PROXY_HEADERS", False),
         session_idle_hours=_int("YTMLS_SESSION_IDLE_HOURS", 72),
         session_max_days=_int("YTMLS_SESSION_MAX_DAYS", 30),
