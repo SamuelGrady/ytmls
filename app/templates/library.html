@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Library{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Library</h1>
+    <p class="muted small">Last refreshed {{ last_refresh|ago }}. Checked items will be downloaded by the sync engine.</p>
+  </div>
+  <form method="post" action="/library/refresh">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <button class="primary" {% if not has_cookies %}disabled title="Add cookies in Settings first"{% endif %}>Refresh library</button>
+  </form>
+</div>
+
+{% if error %}<p class="notice err">{{ error }}</p>{% endif %}
+{% if not has_cookies %}
+  <p class="notice">Connect your YouTube Music account in <a href="/settings">Settings</a> to load your library.</p>
+{% endif %}
+
+{% if new_count %}
+<div class="notice new-banner" id="new-banner">
+  <span>{{ new_count }} new item{{ 's' if new_count != 1 }} since you last looked. Check the ones you want to sync.</span>
+  <button class="link" data-review-all data-csrf="{{ csrf }}">Mark all as reviewed</button>
+</div>
+{% endif %}
+
+{% if items %}
+<div class="toolbar">
+  <div class="tabs" role="tablist">
+    <button role="tab" class="tab" aria-selected="true" data-filter="all">All</button>
+    <button role="tab" class="tab" aria-selected="false" data-filter="album">Albums</button>
+    <button role="tab" class="tab" aria-selected="false" data-filter="playlist">Playlists</button>
+    <button role="tab" class="tab" aria-selected="false" data-filter="synced">Syncing</button>
+  </div>
+  <input type="search" id="search" placeholder="Search titles or artists" aria-label="Search">
+</div>
+
+<ul class="items" id="items" data-csrf="{{ csrf }}">
+  {% for i in items %}
+  <li class="item{% if i.removed_at %} removed{% endif %}" data-kind="{{ i.kind }}" data-synced="{{ i.sync_enabled }}"
+      data-text="{{ (i.title ~ ' ' ~ (i.subtitle or ''))|lower }}">
+    <label class="item-row">
+      <input type="checkbox" class="sync-toggle" data-id="{{ i.id }}" {% if i.sync_enabled %}checked{% endif %}
+             {% if i.removed_at %}disabled{% endif %} aria-label="Sync {{ i.title }}">
+      {% if i.thumbnail_url %}<img src="{{ i.thumbnail_url }}" alt="" loading="lazy" width="48" height="48">{% else %}<span class="thumb-ph"></span>{% endif %}
+      <span class="meta">
+        <span class="title">{{ i.title }}
+          {% if not i.reviewed and not i.removed_at %}<span class="badge new">New</span>{% endif %}
+          {% if i.removed_at %}<span class="badge warn">Not in library</span>{% endif %}
+        </span>
+        <span class="sub muted">
+          {{ 'Album' if i.kind == 'album' else 'Playlist' }}{% if i.subtitle %} · {{ i.subtitle }}{% endif %}{% if i.year %} · {{ i.year }}{% endif %}{% if i.track_count %} · {{ i.track_count }} tracks{% endif %}
+        </span>
+      </span>
+    </label>
+  </li>
+  {% endfor %}
+</ul>
+<p class="muted small" id="empty-filter" hidden>Nothing matches.</p>
+{% elif has_cookies %}
+<p class="muted">No items yet. Press Refresh library.</p>
+{% endif %}
+{% endblock %}

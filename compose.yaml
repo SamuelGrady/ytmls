@@ -1,0 +1,31 @@
+services:
+  ytmls:
+    build: .
+    image: ytmls:latest
+    container_name: ytmls
+    restart: unless-stopped
+    # Match this to the user/group that owns your Jellyfin music folder.
+    user: "1000:1000"
+    environment:
+      # The app is served over HTTPS by Cloudflare Tunnel, so cookies are Secure.
+      # Set to "false" only for plain-http testing on localhost.
+      YTMLS_COOKIE_SECURE: "true"
+      # Safe only when the app is reachable solely through the tunnel
+      # (no published port, or one bound to 127.0.0.1 as below).
+      YTMLS_TRUST_PROXY_HEADERS: "true"
+      # Optional: keep the encryption key outside the data volume.
+      # YTMLS_SECRET_KEY_FILE: /run/secrets/ytmls_key
+    volumes:
+      - ./data:/data
+      # Point this at the folder Jellyfin uses for its music library.
+      - /path/to/jellyfin/music:/music
+    ports:
+      # Bound to localhost so the only way in from outside is the tunnel.
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

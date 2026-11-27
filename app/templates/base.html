@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>{% block title %}YTMLS{% endblock %} · YTMLS</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">YTMLS</a>
+    {% if s %}
+    <nav>
+      <a href="/" {% if request.url.path == '/' %}aria-current="page"{% endif %}>Library</a>
+      <a href="/history" {% if request.url.path == '/history' %}aria-current="page"{% endif %}>History</a>
+      <a href="/settings" {% if request.url.path == '/settings' %}aria-current="page"{% endif %}>Settings</a>
+      <form method="post" action="/logout" class="inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <button class="link">Sign out</button>
+      </form>
+    </nav>
+    {% endif %}
+  </header>
+  <main class="{% block main_class %}wrap{% endblock %}">
+    {% if notice %}<p class="notice ok">{{ notice }}</p>{% endif %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>
