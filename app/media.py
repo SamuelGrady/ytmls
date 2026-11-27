@@ -38,6 +38,42 @@ class TrackMeta:
     cover_url: str | None
 
 
+def folder_problem(music_dir: Path) -> str | None:
+    """Return a human explanation if the music folder can't be written, else None."""
+    uid, gid = os.getuid(), os.getgid()
+    who = f"user {uid}:{gid}"
+    if not music_dir.exists():
+        try:
+            music_dir.mkdir(parents=True)
+        except OSError:
+            pass
+    if not music_dir.exists():
+        return (f"The music folder {music_dir} doesn't exist inside the container. "
+                "Check the music volume line in compose.yaml.")
+    if not music_dir.is_dir():
+        return f"{music_dir} isn't a folder. Check the music volume line in compose.yaml."
+    probe = music_dir / f".ytmls-write-test-{os.getpid()}"
+    try:
+        probe.write_bytes(b"")
+        probe.unlink()
+        return None
+    except OSError as exc:
+        st = music_dir.stat()
+        owner = f"{st.st_uid}:{st.st_gid}"
+        mode = oct(st.st_mode & 0o777)[2:]
+        msg = (f"YTMLS runs as {who} but can't write to {music_dir} "
+               f"(folder owner {owner} as seen inside the container, mode {mode}; error: {exc.strerror}).")
+        if st.st_uid != uid:
+            msg += (f" Set user: \"{st.st_uid}:{st.st_gid}\" in compose.yaml, or chown the folder on the host"
+                    " to the user in compose.yaml.")
+        else:
+            msg += (" The owner matches, so something outside the folder's permissions is blocking writes: "
+                    "on SELinux systems (Fedora, RHEL, Unraid with SELinux) add :z to the volume, e.g. "
+                    "/srv/music:/music:z; a volume ending in :ro is read-only; a network share (NFS/SMB) may "
+                    "map users differently; rootless Docker/Podman remaps user IDs.")
+        return msg
+
+
 def safe_name(name: str, fallback: str = "Unknown", max_len: int = 120) -> str:
     """Make a string safe as a single path component on Linux, Windows and SMB shares."""
     name = unicodedata.normalize("NFC", name or "")
