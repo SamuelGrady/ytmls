@@ -254,3 +254,31 @@ def test_sync_now_requires_csrf(ready, authed):
 def test_status_api(ready, authed):
     st = authed.get("/api/status").json()
     assert st["running"] is False and st["next_run_in"] == "any moment"
+
+
+def test_unwritable_music_folder_is_explained(ready, authed, monkeypatch):
+    import os
+    enable(ready, "MPREb_1")
+    music(ready).mkdir(parents=True, exist_ok=True)
+    real_write = Path.write_bytes
+
+    def deny(self, data):
+        if self.name.startswith(".ytmls-write-test"):
+            raise PermissionError(13, "Permission denied")
+        return real_write(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", deny)
+    s = ready.state.engine.run("manual")
+    assert s.downloaded == 0
+    assert "can't write to" in s.errors[0] and f"user {os.getuid()}" in s.errors[0]
+    page = authed.get("/").text
+    assert "Can&#39;t write to the music folder" in page or "Can't write to the music folder" in page
+
+
+def test_missing_music_folder_is_explained(tmp_path):
+    from app.media import folder_problem
+    blocked = tmp_path / "file"
+    blocked.write_text("x")
+    assert "doesn't exist" in folder_problem(blocked / "music")
+    assert folder_problem(tmp_path / "created") is None
+    assert folder_problem(tmp_path) is None

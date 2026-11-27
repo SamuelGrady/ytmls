@@ -140,6 +140,9 @@ class SyncEngine:
             self._update_memberships(source, summary)
             summary.removals_cancelled = self._cancel_stale_removals()
 
+            problem = media.folder_problem(self.music_dir)
+            if problem:
+                raise RuntimeError(problem)
             self._download_missing(netscape, summary)
             self._queue_removals(summary)
             self._write_playlists(summary)
@@ -491,10 +494,14 @@ class SyncEngine:
                     "WHERE it.item_id = ? AND it.removed_at IS NULL AND t.status = 'downloaded' "
                     "ORDER BY it.position", (p["id"],))
             ]
-            rel = media.write_m3u(self.music_dir, p["title"], p["id"], entries)
-            if p["playlist_file"] and p["playlist_file"] != rel.as_posix():
-                # Playlist was renamed on YouTube Music; the old file is just the previous name.
-                media.remove_file(self.music_dir, p["playlist_file"])
+            try:
+                rel = media.write_m3u(self.music_dir, p["title"], p["id"], entries)
+                if p["playlist_file"] and p["playlist_file"] != rel.as_posix():
+                    # Playlist was renamed on YouTube Music; the old file is just the previous name.
+                    media.remove_file(self.music_dir, p["playlist_file"])
+            except OSError as exc:
+                summary.errors.append(f"Could not write playlist {p['title']}: {exc}"[:300])
+                continue
             self.db.execute("UPDATE library_items SET playlist_file = ? WHERE id = ?", (rel.as_posix(), p["id"]))
             summary.playlists_written += 1
 

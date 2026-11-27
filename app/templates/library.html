@@ -33,6 +33,7 @@
 </div>
 
 {% if error %}<p class="notice err">{{ error }}</p>{% endif %}
+{% if folder_problem %}<p class="notice err"><strong>Can't write to the music folder.</strong> {{ folder_problem }}</p>{% endif %}
 {% if not has_cookies %}
   <p class="notice">Connect your YouTube Music account in <a href="/settings">Settings</a> to load your library.</p>
 {% endif %}

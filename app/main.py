@@ -406,6 +406,7 @@ def create_app(
             "s": s, "items": items, "csrf": s.csrf_token,
             "last_refresh": float(last) if last else None,
             "status": sync_status(),
+            "folder_problem": media_folder_problem(),
             "has_cookies": db.get_setting("ytm_cookies_enc") is not None,
             "new_count": sum(1 for i in items if not i["reviewed"] and i["removed_at"] is None),
             "error": request.query_params.get("error") == "refresh" and db.get_setting("last_refresh_error"),
@@ -443,6 +444,10 @@ def create_app(
         return {"ok": True}
 
     # ------------------------------------------------------------ sync
+
+    def media_folder_problem() -> str | None:
+        from .media import folder_problem
+        return folder_problem(settings.music_dir)
 
     def sync_status() -> dict[str, Any]:
         last = db.one("SELECT * FROM sync_runs WHERE status != 'running' ORDER BY id DESC LIMIT 1")
