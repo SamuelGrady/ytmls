@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}{{ item.title }}{% endblock %}
+{% block content %}
+<p class="small"><a href="/">← Library</a></p>
+<h1>{{ item.title }}</h1>
+<p class="muted">{{ 'Album' if item.kind == 'album' else 'Playlist' }}{% if item.subtitle %} · {{ item.subtitle }}{% endif %}
+  · Sync {{ 'on' if item.sync_enabled else 'off' }}{% if item.playlist_file %} · <code>{{ item.playlist_file }}</code>{% endif %}</p>
+{% if tracks %}
+<table class="tracks">
+  <thead><tr><th>#</th><th>Title</th><th>Status</th></tr></thead>
+  <tbody>
+  {% for t in tracks %}
+  <tr class="{% if t.link_removed %}removed{% endif %}">
+    <td class="muted">{{ loop.index }}</td>
+    <td><span class="title">{{ t.title }}</span><br><span class="muted small">{{ t.artists }}{% if t.album %} · {{ t.album }}{% endif %}</span>
+      {% if t.file_path %}<br><code class="small">{{ t.file_path }}</code>{% endif %}</td>
+    <td>
+      {% if t.link_removed %}<span class="badge warn">removed from {{ item.kind }}</span>
+      {% elif t.status == 'downloaded' %}<span class="badge ok">downloaded</span>
+      {% elif t.status == 'failed' %}<span class="badge warn" title="{{ t.error }}">failed</span>
+        <form method="post" action="/tracks/{{ t.video_id|urlencode }}/retry" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="back" value="/items/{{ item.id|urlencode }}">
+          <button class="link">retry</button></form>
+        <div class="muted small">{{ t.error }}</div>
+      {% else %}<span class="badge">{{ t.status }}</span>{% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">{% if item.sync_enabled %}Tracks appear after the next sync.{% else %}Turn on sync for this {{ item.kind }} to see its tracks.{% endif %}</p>
+{% endif %}
+{% endblock %}

@@ -68,3 +68,34 @@
     });
   }
 })();
+
+(function () {
+  "use strict";
+  const bar = document.getElementById("statusbar");
+  if (bar && bar.dataset.running === "1") {
+    const progress = document.getElementById("sync-progress");
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch("/api/status", { credentials: "same-origin" });
+        if (!res.ok) return;
+        const st = await res.json();
+        if (!st.running) { clearInterval(timer); window.location.replace("/"); return; }
+        const p = st.progress || {};
+        progress.textContent = (p.phase || "") + (p.total ? " " + p.done + "/" + p.total + (p.current ? " · " + p.current : "") : "");
+      } catch (e) { /* keep polling */ }
+    }, 4000);
+  }
+
+  const all = document.getElementById("check-all");
+  if (all) {
+    all.addEventListener("change", () => {
+      document.querySelectorAll('#removals-form input[name="ids"]').forEach((c) => { c.checked = all.checked; });
+    });
+  }
+})();
+
+document.querySelectorAll("[data-confirm]").forEach((btn) => {
+  btn.addEventListener("click", (ev) => {
+    if (!window.confirm(btn.dataset.confirm)) ev.preventDefault();
+  });
+});

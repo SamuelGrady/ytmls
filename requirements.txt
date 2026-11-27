@@ -7,3 +7,9 @@ pyotp==2.12.2
 segno==1.6.6
 cryptography==50.0.2
 ytmusicapi==1.12.4
+mutagen==1.48.1
+# yt-dlp is deliberately unpinned: YouTube changes often and old versions stop
+# working. Rebuilding the image (docker compose build --pull) picks up the latest.
+yt-dlp[default]
+# JavaScript runtime yt-dlp needs to solve YouTube's player challenges.
+deno==2.9.8

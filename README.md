@@ -9,7 +9,7 @@ YTMLS **only reads** your YouTube Music account. It never likes, adds, removes o
 | Step | What it covers | State |
 | --- | --- | --- |
 | 1. Foundation | Container, secure dashboard login, encrypted YouTube cookies, library list with sync checkboxes | Done |
-| 2. Sync engine | Scheduled downloads (every 4 to 6 h), MP3 with tags and cover art, Jellyfin folder layout, `.m3u` playlists, removals waiting for confirmation, optional Premium quality | Planned |
+| 2. Sync engine | Scheduled downloads (every 4 to 6 h), MP3 with tags and cover art, Jellyfin folder layout, `.m3u8` playlists, removals waiting for confirmation, optional Premium quality | Done |
 | 3. Notifications and history | Browser push for new library items, sync summaries and removals waiting for you, plus a full change history | Planned (basic history page exists) |
 | 4. Metadata editor | Edit tags and cover art in the dashboard, optional Jellyfin rescan | Planned |
 
@@ -35,6 +35,37 @@ Subscribed artists are left out for now.
 4. Upload the file in Settings. A raw `Cookie:` request header copied from your browser's dev tools also works.
 
 Cookies eventually expire. When a refresh fails, the dashboard tells you, and you can upload fresh ones.
+
+## How syncing works
+
+- Every few hours (6 by default, set in **Settings → Sync**), and whenever you press **Sync now**, YTMLS:
+  1. Reads your library.
+  2. Reads the tracks of every checked album and playlist.
+  3. Downloads anything missing.
+  4. Writes the playlist files.
+- New songs added to a checked playlist are downloaded automatically.
+- **Files:** `Album Artist/Album/NN - Title.mp3` in your music folder, with title, artists, album artist, album, track number, year and cover art embedded. Songs without an album, such as music videos, are filed as singles: `Artist/Title/Title.mp3`.
+- **Playlists:** each checked playlist becomes `Playlists/<name>.m3u8`, which points at the album files. A song that's in several playlists is stored only once.
+- **Removals never happen on their own.** These all add a request to the **Removals** page:
+  - a song leaves a playlist
+  - an album or playlist leaves your library
+  - you uncheck an item
+
+  You choose **Delete** (the file goes, and empty folders are cleaned up) or **Keep** (the file stays and you won't be asked again).
+- **Quality:**
+  - YTMLS takes the best audio stream YouTube offers and encodes it to MP3, 320 kbps by default. V0, 256 and 192 are also available.
+  - With **Premium quality** turned on, it asks for the 256 kbps AAC stream that Premium accounts get. YouTube's streams are already lossy, so 320 kbps is the setting that loses the least extra quality.
+- **Pace:** downloads are spaced a few seconds apart, and at most 200 run per sync (adjustable). A large first sync spreads over several runs.
+- **Failures:** a failed download is retried on later runs, up to 5 times. You can retry it sooner from the album or playlist's page.
+- **Read-only:** yt-dlp runs with `mark_watched` off, so nothing appears in your YouTube watch history.
+
+### Keeping yt-dlp current
+
+YouTube changes often, and old yt-dlp versions stop working. If downloads start failing for every track, rebuild the image to pick up the newest yt-dlp:
+
+```sh
+docker compose build --pull && docker compose up -d
+```
 
 ## Exposing it with Cloudflare Tunnel
 
