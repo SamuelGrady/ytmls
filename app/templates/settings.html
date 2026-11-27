@@ -21,18 +21,24 @@
   <h2>YouTube Music account</h2>
   <p class="muted small">YTMLS only reads your library. It never changes anything on your YouTube or Google account. Cookies are stored encrypted.</p>
   {% if has_cookies %}
-    <p>Status: {% if ytm_status == 'ok' %}<span class="badge ok">Connected</span>{% else %}<span class="badge warn">Needs attention</span>{% endif %}
-       <span class="muted small">Saved {{ cookies_saved_at|ago }}{% if cookies_expiry %}, earliest cookie expires {{ cookies_expiry|datetime }}{% endif %}.</span></p>
+    <p>Status: {% if ytm_status == 'ok' and not ytm_fail_streak %}<span class="badge ok">Connected</span>{% elif ytm_status == 'ok' %}<span class="badge warn">Last check failed, retrying</span>{% else %}<span class="badge warn">Needs new cookies</span>{% endif %}
+       <span class="muted small">Uploaded {{ cookies_saved_at|ago }}{% if cookies_refreshed_at %}, last refreshed by YouTube {{ cookies_refreshed_at|ago }}{% endif %}{% if ytm_last_check %}, last checked {{ ytm_last_check|ago }}{% endif %}.</span></p>
+    {% if ytm_fail_streak and ytm_last_error %}<p class="muted small">Last problem: {{ ytm_last_error }}</p>{% endif %}
+    <p class="muted small">YTMLS checks the sign-in about once an hour with a small read-only request and saves the refreshed cookies YouTube sends back, so the session stays alive on its own. If YouTube ever stops accepting it, you'll get a notification.</p>
   {% endif %}
   {% if yt_error %}<p class="notice err">{{ yt_error }}</p>{% endif %}
-  <details {% if not has_cookies or yt_error %}open{% endif %}>
+  <details {% if not has_cookies or yt_error or ytm_status not in (none, 'ok') %}open{% endif %}>
     <summary>{{ 'Replace cookies' if has_cookies else 'Add cookies' }}</summary>
+    <p class="small"><strong>How to export cookies that last.</strong> The usual reason cookies stop working after a day is that the browser you exported from keeps using the same session. Google then gives the browser new cookie values and the exported copy stops working. Exporting from a private window that you then close leaves YTMLS as the only user of that session.</p>
     <ol class="small">
-      <li>In a private/incognito window, sign in at <code>music.youtube.com</code>.</li>
-      <li>Export cookies for that site in Netscape <code>cookies.txt</code> format, for example with the "Get cookies.txt LOCALLY" extension.</li>
-      <li>Close the private window without signing out, so the cookies stay valid longer.</li>
-      <li>Upload the file or paste its contents below. A raw <code>Cookie:</code> header copied from your browser's network tab also works.</li>
+      <li>Open a new private/incognito window. Close any other private windows first.</li>
+      <li>Sign in at <code>music.youtube.com</code> in that window.</li>
+      <li>In the same tab, go to <code>https://music.youtube.com/robots.txt</code>. This plain page doesn't run YouTube's scripts, so the cookies don't change while you export.</li>
+      <li>Export cookies for <code>music.youtube.com</code> in Netscape <code>cookies.txt</code> format, for example with the "Get cookies.txt LOCALLY" extension. You may need to allow the extension in private windows.</li>
+      <li>Close the private window right away, <strong>without signing out</strong>. Signing out would end the session YTMLS is about to use.</li>
+      <li>Upload the file or paste its contents below. A raw <code>Cookie:</code> header copied from your browser's network tab also works, but a <code>cookies.txt</code> file lasts longer.</li>
     </ol>
+    <p class="muted small">Your normal browser windows stay signed in as usual. Each sign-in is its own session, so YouTube in your normal browser doesn't affect this one.</p>
     <form method="post" action="/settings/youtube" enctype="multipart/form-data" class="stack">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <label>cookies.txt file <input type="file" name="cookies_file" accept=".txt,text/plain"></label>

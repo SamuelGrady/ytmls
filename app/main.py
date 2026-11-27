@@ -29,6 +29,7 @@ from .editor import EditError, MetadataEditor
 from .jellyfin import Jellyfin, JellyfinError
 from .sync import DEFAULTS, Scheduler, SyncBusy, SyncEngine, SyncSummary, get_option
 from .security import LoginThrottle, Session, SessionStore, Vault
+from .ytauth import CookieStore
 from .ytm import CookieError, LibrarySource, ReadOnlyYTMusic, parse_cookies
 
 log = logging.getLogger("ytmls")
@@ -118,16 +119,14 @@ def create_app(
     templates.env.filters["clock"] = lambda ts: time.strftime("%H:%M", time.localtime(ts))
     templates.env.filters["datetime"] = lambda ts: time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
 
-    def ytm_cookies() -> str | None:
-        enc = db.get_setting("ytm_cookies_enc")
-        return vault.decrypt(enc) if enc else None
-
+    cookie_store = CookieStore(db, vault)
     engine = SyncEngine(
-        db, settings.music_dir, settings.data_dir / "tmp", ytm_cookies, ytm_factory,
+        db, settings.music_dir, settings.data_dir / "tmp", cookie_store, ytm_factory,
         downloader or YtDlpDownloader(),
     )
     scheduler = Scheduler(engine, db)
     notifier = Notifier(db, vault, settings.vapid_subject, sender=push_sender, background=push_sender is None)
+    cookie_store.on_expired = notifier.cookies_expired
 
     jellyfin = Jellyfin(db, vault)
     editor = MetadataEditor(db, engine, settings.music_dir)
@@ -265,24 +264,29 @@ def create_app(
         resp.delete_cookie(PRE_COOKIE, path="/")
         return resp
 
-    def do_refresh() -> str:
-        netscape = ytm_cookies()
+    def do_refresh(testing_upload: bool = False) -> str:
+        netscape, gen = cookie_store.load()
         if not netscape:
             raise CookieError("Add your YouTube Music cookies in Settings first.")
         header = parse_cookies(netscape).cookie_header
         try:
-            result = refresh_library(db, ytm_factory(header))
+            source = ytm_factory(header)
+            result = refresh_library(db, source)
             if not result.first_import:
                 notifier.new_library_items([e.title for e in result.added])
         except CookieError:
             raise
         except Exception as exc:  # network / auth failures from ytmusicapi
-            db.set_setting("ytm_status", f"error:{type(exc).__name__}")
             log.exception("Library refresh failed")
+            if not testing_upload:  # a rejected upload is rolled back, not counted against the saved set
+                cookie_store.record_failure(f"Reading the library failed: {exc}")
             raise CookieError(
                 "YouTube Music did not accept the request. The cookies may have expired; export fresh ones."
             ) from exc
-        db.set_setting("ytm_status", "ok")
+        cookie_store.record_ok()
+        refreshed = getattr(source, "refreshed_cookies", None)
+        if refreshed is not None:
+            cookie_store.save_refreshed(refreshed(), gen)
         return result.summary()
 
     # ------------------------------------------------------------ middleware & errors
@@ -854,6 +858,10 @@ def create_app(
             "cookies_saved_at": float(db.get_setting("ytm_cookies_saved_at") or 0) or None,
             "cookies_expiry": float(expiry) if expiry else None,
             "ytm_status": db.get_setting("ytm_status"),
+            "cookies_refreshed_at": float(db.get_setting("ytm_cookies_refreshed_at") or 0) or None,
+            "ytm_last_check": float(db.get_setting("ytm_last_check") or 0) or None,
+            "ytm_last_error": db.get_setting("ytm_last_error"),
+            "ytm_fail_streak": int(db.get_setting("ytm_fail_streak") or 0),
             "other_sessions": sessions.count_for_user(s.user_id) - 1,
             "sync": {k: get_option(db, k) for k in DEFAULTS},
             "push_subs": notifier.subscriptions(),
@@ -893,16 +901,14 @@ def create_app(
         except CookieError as exc:
             return render(request, "settings.html", settings_ctx(request, s, yt_error=str(exc)), 400)
 
-        previous = db.get_setting("ytm_cookies_enc")
-        db.set_setting("ytm_cookies_enc", vault.encrypt(parsed.netscape))
+        previous = cookie_store.replace(parsed.netscape)
         from starlette.concurrency import run_in_threadpool
         try:
-            await run_in_threadpool(do_refresh)
+            await run_in_threadpool(do_refresh, True)
         except CookieError as exc:
-            db.set_setting("ytm_cookies_enc", previous)
+            cookie_store.rollback(previous)
             return render(request, "settings.html", settings_ctx(request, s, yt_error=str(exc)), 400)
-        db.set_setting("ytm_cookies_saved_at", str(time.time()))
-        db.set_setting("ytm_cookies_expiry", str(parsed.earliest_expiry) if parsed.earliest_expiry else None)
+        cookie_store.uploaded(parsed.earliest_expiry)
         db.log_event("security", "YouTube Music cookies updated")
         return RedirectResponse("/settings?msg=cookies_saved", status_code=303)
 
@@ -910,8 +916,7 @@ def create_app(
     def settings_youtube_remove(request: Request, csrf_token: str = Form("")):
         s = require(request)
         require_csrf(request, s, csrf_token)
-        for key in ("ytm_cookies_enc", "ytm_cookies_saved_at", "ytm_cookies_expiry", "ytm_status"):
-            db.set_setting(key, None)
+        cookie_store.clear()
         db.log_event("security", "YouTube Music cookies removed")
         return RedirectResponse("/settings?msg=cookies_removed", status_code=303)
 
