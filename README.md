@@ -27,14 +27,17 @@ Subscribed artists are left out for now.
 6. In **Settings → YouTube Music account**, add your cookies (see below). Your library loads as soon as they're accepted.
 7. In **Settings → Two-factor authentication**, turn on 2FA.
 
-### Getting cookies
+### Getting cookies that last
 
-1. Open a private/incognito window and sign in at `music.youtube.com`.
-2. Export that site's cookies in Netscape `cookies.txt` format, for example with the "Get cookies.txt LOCALLY" browser extension.
-3. Close the private window **without signing out**. Signing out invalidates the cookies.
-4. Upload the file in Settings. A raw `Cookie:` request header copied from your browser's dev tools also works.
+Exported cookies usually die within a day when the browser they came from keeps using the same session, because Google then rotates the values and the exported copy is left behind. Export from a private window that you then close, so YTMLS is the only thing using that session:
 
-Cookies eventually expire. When a refresh fails, the dashboard tells you, and you can upload fresh ones.
+1. Open a new private/incognito window (close any other private windows first) and sign in at `music.youtube.com`.
+2. In the same tab, open `https://music.youtube.com/robots.txt`, so YouTube's scripts don't rotate the cookies while you export.
+3. Export that site's cookies in Netscape `cookies.txt` format, for example with the "Get cookies.txt LOCALLY" browser extension.
+4. Close the private window right away, **without signing out**. Signing out ends the session.
+5. Upload the file in Settings. A raw `Cookie:` request header copied from your browser's dev tools also works, but a `cookies.txt` file lasts longer.
+
+After that YTMLS keeps the session alive on its own. It saves the refreshed cookie values YouTube sends back after every library read and download, and it makes a small read-only sign-in check about once an hour between syncs. If YouTube stops accepting the cookies anyway (two failed checks in a row), downloads pause and you get one push notification asking you to upload fresh ones.
 
 ## How syncing works
 

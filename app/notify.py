@@ -150,6 +150,12 @@ class Notifier:
                   f"{shown}. Open YTMLS to choose whether to sync {'them' if n != 1 else 'it'}.",
                   "/?filter=new", tag="ytmls-new")
 
+    def cookies_expired(self, reason: str) -> None:
+        self.send("YouTube Music sign-in expired",
+                  "YouTube stopped accepting the saved cookies, so syncing is paused. "
+                  "Open Settings to upload fresh ones.",
+                  "/settings#youtube", tag="ytmls-cookies")
+
     def sync_finished(self, status: str, headline: str, details: list[str], removals: int, error: str | None,
                       quiet_if_unchanged: bool) -> None:
         if status == "error":
