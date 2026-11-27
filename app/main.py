@@ -55,10 +55,8 @@ MESSAGES = {
     "sync_started": "Sync started. This page updates as it runs.",
     "sync_busy": "A sync is already running.",
     "sync_saved": "Sync settings saved.",
-    "singles_on": "Sync settings saved. Singles now go straight into their artist's folder, and the ones "
-                  "already downloaded were moved. Playlists were updated to match.",
-    "singles_off": "Sync settings saved. Singles go back into their own album folders, and the ones "
-                   "already downloaded were moved. Playlists were updated to match.",
+    "layout_moved": "Sync settings saved. Songs already downloaded were moved to match, and playlists "
+                    "were updated.",
     "singles_later": "Sync settings saved. A sync is running, so files already downloaded will be moved "
                      "at the start of the next sync.",
     "removals_done": "Done.",
@@ -584,7 +582,7 @@ def create_app(
     @app.post("/settings/sync")
     def settings_sync(request: Request, csrf_token: str = Form(""), interval: str = Form("6"),
                       premium: str = Form(""), max_per_run: str = Form("200"),
-                      singles: str = Form("")):
+                      singles: str = Form(""), incomplete: str = Form("")):
         s = require(request)
         require_csrf(request, s, csrf_token)
         try:
@@ -596,19 +594,21 @@ def create_app(
         db.set_setting("sync_interval_hours", f"{hours:g}")
         db.set_setting("premium_quality", "1" if premium else "0")
         db.set_setting("max_downloads_per_run", str(per_run))
-        was_loose = get_option(db, "singles_loose") == "1"
+        before = (get_option(db, "singles_loose"), get_option(db, "incomplete_loose"))
         db.set_setting("singles_loose", "1" if singles else "0")
+        db.set_setting("incomplete_loose", "1" if incomplete else "0")
         db.log_event("settings", f"Sync settings: every {hours:g}h, "
                                  f"Premium quality {'on' if premium else 'off'}, up to {per_run} downloads per run, "
-                                 f"singles {'kept out of Albums' if singles else 'in album folders'}")
+                                 f"singles {'kept out of Albums' if singles else 'in album folders'}, "
+                                 f"incomplete albums {'hidden' if incomplete else 'shown'}")
         msg = "sync_saved"
-        if bool(singles) != was_loose:
+        if before != ("1" if singles else "0", "1" if incomplete else "0"):
             try:
                 moved = engine.relayout()
             except SyncBusy:
                 msg = "singles_later"
             else:
-                msg = "singles_on" if singles else "singles_off"
+                msg = "layout_moved" if moved else "sync_saved"
                 if moved and db.get_setting("jellyfin_auto") != "0":
                     jellyfin.request_refresh()
         return RedirectResponse(f"/settings?msg={msg}#sync", status_code=303)

@@ -40,6 +40,7 @@ DEFAULTS = {
     "max_downloads_per_run": "200",
     "download_delay_seconds": "3",
     "singles_loose": "0",
+    "incomplete_loose": "0",
 }
 
 # Release types that "Keep singles out of Albums" stores loose in the artist folder.
@@ -563,14 +564,34 @@ class SyncEngine:
     def singles_loose(self) -> bool:
         return get_option(self.db, "singles_loose") == "1"
 
-    def meta_for(self, t: Any, loose_setting: bool | None = None) -> TrackMeta:
-        """Build the metadata a track's file should have, from its database row."""
-        if loose_setting is None:
-            loose_setting = self.singles_loose()
+    def incomplete_loose(self) -> bool:
+        return get_option(self.db, "incomplete_loose") == "1"
+
+    ALBUM_MEMBERS_SQL = (
+        "SELECT DISTINCT it.video_id FROM item_tracks it JOIN library_items li ON li.id = it.item_id "
+        "WHERE li.kind = 'album' AND li.sync_enabled = 1 AND li.removed_at IS NULL AND it.removed_at IS NULL"
+    )
+
+    def _album_members(self) -> set[str]:
+        """Songs that belong to an album you sync, so that album is complete in the music folder."""
+        return {r["video_id"] for r in self.db.all(self.ALBUM_MEMBERS_SQL)}
+
+    def _layout_rules(self) -> tuple[bool, set[str] | None]:
+        return self.singles_loose(), (self._album_members() if self.incomplete_loose() else None)
+
+    def meta_for(self, t: Any, rules: tuple[bool, set[str] | None] | None = None) -> TrackMeta:
+        """Build the metadata a track's file should have, from its database row.
+
+        A track is stored loose in its artist folder when it is a single (and singles
+        are kept out of Albums), or when it only comes from playlists and its album
+        isn't one you sync (and incomplete albums are hidden).
+        """
+        singles, album_members = rules if rules is not None else self._layout_rules()
+        loose = (singles and t["release_type"] in LOOSE_RELEASES) or (
+            album_members is not None and t["video_id"] not in album_members)
         return TrackMeta(t["video_id"], t["title"], t["artists"] or "", t["album"] or t["title"],
                          t["album_artist"] or t["artists"] or "Unknown Artist", t["track_number"],
-                         t["year"], t["cover_url"],
-                         loose=loose_setting and t["release_type"] in LOOSE_RELEASES)
+                         t["year"], t["cover_url"], loose=loose)
 
     def place_artist_nfo(self, rel: Path, meta: TrackMeta) -> None:
         if meta.loose:
@@ -585,16 +606,19 @@ class SyncEngine:
         return moved
 
     def _apply_layout(self) -> int:
-        """Move downloaded singles in or out of their album folders to match the setting.
+        """Move downloaded songs in or out of their album folders to match the settings.
 
         Retags as it goes (album tag and track number off for loose songs, back on
         otherwise) and leaves your cover art alone. Returns how many files moved.
         """
-        loose_setting = self.singles_loose()
-        moved = 0
+        rules = self._layout_rules()
+        wanted = self.wanted()
+        moved = to_loose = 0
         touched: set[Path] = set()
         for t in self.db.all("SELECT * FROM tracks WHERE status = 'downloaded' AND file_path IS NOT NULL"):
-            meta = self.meta_for(t, loose_setting)
+            if t["video_id"] not in wanted:
+                continue  # waiting for your OK to remove, or kept: leave the file where it is
+            meta = self.meta_for(t, rules)
             current = Path(t["file_path"])
             is_loose = len(current.parts) == 2
             if meta.loose == is_loose:
@@ -616,15 +640,19 @@ class SyncEngine:
                             (target.as_posix(), time.time(), t["video_id"]))
             touched.add(Path(current.parts[0]))
             moved += 1
-        if not loose_setting:
-            for artist_dir in touched:
-                try:
-                    media.remove_our_nfo_if_unneeded(self.music_dir, artist_dir)
-                except (OSError, ValueError):
-                    pass
-        if moved:
-            where = "into their artist folders" if loose_setting else "back into album folders"
-            self.db.log_event("layout", f"Moved {moved} single{'s' if moved != 1 else ''} {where}")
+            to_loose += meta.loose
+        for artist_dir in touched:
+            try:
+                media.remove_our_nfo_if_unneeded(self.music_dir, artist_dir)
+            except (OSError, ValueError):
+                pass
+        parts = []
+        if to_loose:
+            parts.append(f"{to_loose} into their artist folders")
+        if moved - to_loose:
+            parts.append(f"{moved - to_loose} into album folders")
+        if parts:
+            self.db.log_event("layout", f"Moved {moved} song{'s' if moved != 1 else ''}: {', '.join(parts)}")
         return moved
 
     def _target_path(self, meta: TrackMeta, suffix: str) -> Path:
@@ -655,10 +683,11 @@ class SyncEngine:
         with os.fdopen(fd, "w") as fh:
             fh.write(netscape)
         consecutive = 0
+        rules = self._layout_rules()
         try:
             for n, t in enumerate(todo, start=1):
                 self.progress = {"phase": "Downloading", "done": n - 1, "total": len(todo), "current": t["title"]}
-                meta = self.meta_for(t)
+                meta = self.meta_for(t, rules)
                 try:
                     rel, _ = produce_track(self.downloader, meta, self.music_dir,
                                            lambda suffix, meta=meta: self._target_path(meta, suffix),

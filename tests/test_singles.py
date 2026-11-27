@@ -23,11 +23,13 @@ def add_release(browse_id, title, kind, artist, tracks):
     }
 
 
-def set_singles(app, client, on: bool):
+def set_singles(app, client, on: bool, incomplete: bool = False):
     csrf = csrf_from(client.get("/settings").text)
     data = {"csrf_token": csrf, "interval": "6", "max_per_run": "200"}
     if on:
         data["singles"] = "1"
+    if incomplete:
+        data["incomplete"] = "1"
     r = client.post("/settings/sync", data=data, follow_redirects=False)
     assert r.status_code == 303
     return r.headers["location"]
@@ -84,7 +86,7 @@ def test_turning_on_and_off_moves_existing_files(releases, authed):
     old = root / "Artist C" / "Hit Song" / "01 - Hit Song.opus"
     assert old.exists()
 
-    assert "singles_on" in set_singles(releases, authed, True)
+    assert "layout_moved" in set_singles(releases, authed, True)
     new = root / "Artist C" / "Hit Song.opus"
     assert new.exists() and not old.exists()
     assert not (root / "Artist C" / "Hit Song").exists(), "empty album folder is removed"
@@ -93,7 +95,7 @@ def test_turning_on_and_off_moves_existing_files(releases, authed):
     row = releases.state.db.one("SELECT file_path FROM tracks WHERE video_id = 's1'")
     assert row["file_path"] == "Artist C/Hit Song.opus"
 
-    assert "singles_off" in set_singles(releases, authed, False)
+    assert "layout_moved" in set_singles(releases, authed, False)
     assert old.exists() and not new.exists()
     assert OggOpus(old)["album"] == ["Hit Song"] and OggOpus(old)["tracknumber"] == ["1"]
     assert not (root / "Artist C" / "artist.nfo").exists(), "YTMLS removes its own artist.nfo"
@@ -143,3 +145,54 @@ def test_artist_nfo_escapes_names(tmp_path):
     media.ensure_artist_nfo(tmp_path, Path("A & B"), "A & B <live>")
     text = (tmp_path / "A & B" / "artist.nfo").read_text()
     assert "<name>A &amp; B &lt;live&gt;</name>" in text
+
+
+def test_incomplete_albums_go_loose_until_the_album_is_synced(releases, authed):
+    set_singles(releases, authed, False, incomplete=True)
+    enable(releases, "PL1")
+    engine = releases.state.engine
+    engine.run("manual")
+    root = music(releases)
+    # a2 is track 2 of Album One, but only the playlist is synced: no one-song album folder.
+    loose = root / "Artist A" / "Second_Song.opus"
+    assert loose.exists() and not (root / "Artist A" / "Album One").exists()
+    assert "album" not in OggOpus(loose)
+    assert "../Artist A/Second_Song.opus" in (root / "Playlists" / "Road Trip.m3u8").read_text()
+    assert (root / "Artist B" / "Music Video.opus").exists()
+    assert (root / "Artist A" / "artist.nfo").exists()
+
+    # Sync the whole album: its songs come together in a full album folder.
+    enable(releases, "MPREb_1")
+    s = engine.run("manual")
+    assert s.relocated == 1
+    assert not loose.exists()
+    assert (root / "Artist A" / "Album One" / "01 - First Song.opus").exists()
+    moved = root / "Artist A" / "Album One" / "02 - Second_Song.opus"
+    assert moved.exists() and OggOpus(moved)["album"] == ["Album One"]
+    assert not (root / "Artist A" / "artist.nfo").exists()
+    assert "../Artist A/Album One/02 - Second_Song.opus" in (root / "Playlists" / "Road Trip.m3u8").read_text()
+
+
+def test_turning_incomplete_on_moves_playlist_only_songs(releases, authed):
+    enable(releases, "PL1", "MPREb_S")
+    releases.state.engine.run("manual")
+    root = music(releases)
+    assert (root / "Artist A" / "Album One" / "02 - Second_Song.opus").exists()
+    assert "layout_moved" in set_singles(releases, authed, False, incomplete=True)
+    assert (root / "Artist A" / "Second_Song.opus").exists()
+    # The single is synced as its own album item, so this setting leaves it in its folder.
+    assert (root / "Artist C" / "Hit Song" / "01 - Hit Song.opus").exists()
+    assert "layout_moved" in set_singles(releases, authed, False, incomplete=False)
+    assert (root / "Artist A" / "Album One" / "02 - Second_Song.opus").exists()
+
+
+def test_files_waiting_for_removal_are_not_moved(releases, authed):
+    enable(releases, "PL1")
+    engine = releases.state.engine
+    engine.run("manual")
+    FakeYTM.playlist_tracks["PL1"] = FakeYTM.playlist_tracks["PL1"][1:]  # a2 dropped from the playlist
+    engine.run("manual")
+    set_singles(releases, authed, False, incomplete=True)
+    root = music(releases)
+    assert (root / "Artist A" / "Album One" / "02 - Second_Song.opus").exists()
+    assert (root / "Artist B" / "Music Video.opus").exists()
