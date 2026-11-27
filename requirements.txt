@@ -8,6 +8,7 @@ segno==1.6.6
 cryptography==50.0.2
 ytmusicapi==1.12.4
 mutagen==1.48.1
+pywebpush==2.5.0
 # yt-dlp is deliberately unpinned: YouTube changes often and old versions stop
 # working. Rebuilding the image (docker compose build --pull) picks up the latest.
 yt-dlp[default]

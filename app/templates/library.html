@@ -52,13 +52,14 @@
     <button role="tab" class="tab" aria-selected="false" data-filter="album">Albums</button>
     <button role="tab" class="tab" aria-selected="false" data-filter="playlist">Playlists</button>
     <button role="tab" class="tab" aria-selected="false" data-filter="synced">Syncing</button>
+    {% if new_count %}<button role="tab" class="tab" aria-selected="false" data-filter="new">New</button>{% endif %}
   </div>
   <input type="search" id="search" placeholder="Search titles or artists" aria-label="Search">
 </div>
 
 <ul class="items" id="items" data-csrf="{{ csrf }}">
   {% for i in items %}
-  <li class="item{% if i.removed_at %} removed{% endif %}" data-kind="{{ i.kind }}" data-synced="{{ i.sync_enabled }}"
+  <li class="item{% if i.removed_at %} removed{% endif %}" data-kind="{{ i.kind }}" data-synced="{{ i.sync_enabled }}" data-new="{{ 1 if (not i.reviewed and not i.removed_at) else 0 }}"
       data-text="{{ (i.title ~ ' ' ~ (i.subtitle or ''))|lower }}">
     <label class="item-row">
       <input type="checkbox" class="sync-toggle" data-id="{{ i.id }}" {% if i.sync_enabled %}checked{% endif %}

@@ -24,6 +24,7 @@ from .db import Database
 from .downloader import Downloader, YtDlpDownloader
 from .library import refresh_library
 from .media import MP3_QUALITIES
+from .notify import Notifier
 from .sync import DEFAULTS, Scheduler, SyncEngine, SyncSummary, get_option
 from .security import LoginThrottle, Session, SessionStore, Vault
 from .ytm import CookieError, LibrarySource, ReadOnlyYTMusic, parse_cookies
@@ -47,6 +48,9 @@ MESSAGES = {
     "sync_busy": "A sync is already running.",
     "sync_saved": "Sync settings saved.",
     "removals_done": "Done.",
+    "push_test": "Test notification sent to every subscribed device.",
+    "push_removed": "Device removed.",
+    "notify_saved": "Notification settings saved.",
 }
 
 CSP = (
@@ -72,6 +76,7 @@ def create_app(
     ytm_factory: Callable[[str], LibrarySource] | None = None,
     downloader: Downloader | None = None,
     start_scheduler: bool = True,
+    push_sender: Callable[..., Any] | None = None,
 ) -> FastAPI:
     settings = settings or load_settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -83,6 +88,7 @@ def create_app(
     templates = Jinja2Templates(directory=str(BASE / "templates"))
     templates.env.filters["ago"] = _ago
     templates.env.filters["until"] = lambda ts: _until(ts) or ""
+    templates.env.filters["clock"] = lambda ts: time.strftime("%H:%M", time.localtime(ts))
     templates.env.filters["datetime"] = lambda ts: time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
 
     def ytm_cookies() -> str | None:
@@ -94,6 +100,15 @@ def create_app(
         downloader or YtDlpDownloader(),
     )
     scheduler = Scheduler(engine, db)
+    notifier = Notifier(db, vault, settings.vapid_subject, sender=push_sender, background=push_sender is None)
+
+    def after_sync(status: str, summary: SyncSummary, error: str | None) -> None:
+        notifier.new_library_items(summary.library_new)
+        notifier.sync_finished(status, summary.headline(), summary.detail_lines(include_library=False),
+                               len(summary.removals_queued), error,
+                               quiet_if_unchanged=db.get_setting("notify_quiet_unchanged") == "1")
+
+    engine.on_finished = after_sync
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -108,6 +123,7 @@ def create_app(
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.engine = engine
     app.state.scheduler = scheduler
+    app.state.notifier = notifier
     app.state.db = db
     app.state.settings = settings
     app.state.setup_token = None
@@ -222,6 +238,8 @@ def create_app(
         header = parse_cookies(netscape).cookie_header
         try:
             result = refresh_library(db, ytm_factory(header))
+            if not result.first_import:
+                notifier.new_library_items([e.title for e in result.added])
         except CookieError:
             raise
         except Exception as exc:  # network / auth failures from ytmusicapi
@@ -451,8 +469,8 @@ def create_app(
 
     def sync_status() -> dict[str, Any]:
         last = db.one("SELECT * FROM sync_runs WHERE status != 'running' ORDER BY id DESC LIMIT 1")
-        last_summary = json.loads(last["summary"]) if last and last["summary"] else None
-        headline = SyncSummary(**last_summary).headline() if last_summary else None
+        last_summary = SyncSummary.from_json(last["summary"]) if last else None
+        headline = last_summary.headline() if last_summary else None
         return {
             "running": engine.running or scheduler.queued,
             "progress": dict(engine.progress),
@@ -538,11 +556,87 @@ def create_app(
                                  f"Premium quality {'on' if premium else 'off'}, up to {per_run} downloads per run")
         return RedirectResponse("/settings?msg=sync_saved#sync", status_code=303)
 
-    @app.get("/history")
-    def history_page(request: Request):
+    # ------------------------------------------------------------ push notifications
+
+    @app.get("/sw.js")
+    def service_worker():
+        resp = Response((BASE / "static" / "sw.js").read_text(), media_type="text/javascript")
+        resp.headers["Service-Worker-Allowed"] = "/"
+        return resp
+
+    @app.get("/api/push/key")
+    def push_key(request: Request):
+        require(request, api=True)
+        return {"key": notifier.public_key()}
+
+    @app.post("/api/push/subscribe")
+    def push_subscribe(request: Request, payload: dict = Body(...)):
+        s = require(request, api=True)
+        require_csrf(request, s, request.headers.get("x-csrf-token"))
+        label = str(payload.get("label") or _device_label(request.headers.get("user-agent", "")))
+        try:
+            notifier.subscribe(payload.get("subscription") or {}, label)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        db.log_event("settings", f"Notifications turned on for {label}")
+        return {"ok": True}
+
+    @app.post("/api/push/unsubscribe")
+    def push_unsubscribe(request: Request, payload: dict = Body(...)):
+        s = require(request, api=True)
+        require_csrf(request, s, request.headers.get("x-csrf-token"))
+        notifier.unsubscribe(endpoint=str(payload.get("endpoint") or ""))
+        return {"ok": True}
+
+    @app.post("/settings/push/remove")
+    def push_remove(request: Request, csrf_token: str = Form(""), sub_id: int = Form(0)):
         s = require(request)
-        events = db.all("SELECT * FROM events ORDER BY ts DESC, id DESC LIMIT 500")
-        return render(request, "history.html", {"s": s, "events": events, "csrf": s.csrf_token})
+        require_csrf(request, s, csrf_token)
+        notifier.unsubscribe(sub_id=sub_id)
+        db.log_event("settings", "Removed a device from notifications")
+        return RedirectResponse("/settings?msg=push_removed#notifications", status_code=303)
+
+    @app.post("/settings/push/test")
+    def push_test(request: Request, csrf_token: str = Form("")):
+        s = require(request)
+        require_csrf(request, s, csrf_token)
+        notifier.send("YTMLS test", "Notifications are working.", "/settings#notifications", tag="ytmls-test")
+        return RedirectResponse("/settings?msg=push_test#notifications", status_code=303)
+
+    @app.post("/settings/notifications")
+    def notify_settings(request: Request, csrf_token: str = Form(""), quiet: str = Form("")):
+        s = require(request)
+        require_csrf(request, s, csrf_token)
+        db.set_setting("notify_quiet_unchanged", "1" if quiet else "0")
+        return RedirectResponse("/settings?msg=notify_saved#notifications", status_code=303)
+
+    @app.get("/history")
+    def history_page(request: Request, kind: str = "all", before: int | None = None):
+        s = require(request)
+        kinds = HISTORY_FILTERS.get(kind)
+        if kinds is None:
+            kind, kinds = "all", []
+        where, params = [], []
+        if kinds:
+            where.append(f"kind IN ({','.join('?' for _ in kinds)})")
+            params += kinds
+        if before:
+            where.append("id < ?")
+            params.append(before)
+        sql = "SELECT * FROM events" + (" WHERE " + " AND ".join(where) if where else "")
+        rows = db.all(sql + " ORDER BY id DESC LIMIT ?", (*params, HISTORY_PAGE + 1))
+        more = len(rows) > HISTORY_PAGE
+        rows = rows[:HISTORY_PAGE]
+        days: list[dict[str, Any]] = []
+        for r in rows:
+            label = _day_label(r["ts"])
+            if not days or days[-1]["label"] != label:
+                days.append({"label": label, "events": []})
+            days[-1]["events"].append(_event_view(r))
+        return render(request, "history.html", {
+            "s": s, "csrf": s.csrf_token, "days": days, "kind": kind, "filters": list(HISTORY_FILTERS),
+            "older": rows[-1]["id"] if more and rows else None,
+        })
 
     # ------------------------------------------------------------ settings
 
@@ -557,6 +651,8 @@ def create_app(
             "ytm_status": db.get_setting("ytm_status"),
             "other_sessions": sessions.count_for_user(s.user_id) - 1,
             "sync": {k: get_option(db, k) for k in DEFAULTS},
+            "push_subs": notifier.subscriptions(),
+            "notify_quiet": db.get_setting("notify_quiet_unchanged") == "1",
             "qualities": list(MP3_QUALITIES),
         }
         ctx.update(extra)
@@ -698,6 +794,77 @@ def _ago(ts: float | None) -> str:
             n = int(delta // size)
             return f"{n} {unit}{'s' if n != 1 else ''} ago"
     return "just now"
+
+
+HISTORY_PAGE = 150
+HISTORY_FILTERS = {
+    "all": [],
+    "syncs": ["sync"],
+    "library": ["library"],
+    "tracks": ["tracks", "download"],
+    "removals": ["removal"],
+    "selection": ["selection"],
+    "account": ["security", "settings"],
+}
+
+
+def _day_label(ts: float) -> str:
+    day = time.localtime(ts)
+    today = time.localtime()
+    yesterday = time.localtime(time.time() - 86400)
+    if day[:3] == today[:3]:
+        return "Today"
+    if day[:3] == yesterday[:3]:
+        return "Yesterday"
+    return time.strftime("%A, %B %-d, %Y", day)
+
+
+def _event_view(row) -> dict[str, Any]:
+    """Turn an event row into something the history template can show, with
+    structured details for sync runs and plain lists for everything else."""
+    view = {"ts": row["ts"], "kind": row["kind"], "message": row["message"], "sections": [], "detail": None}
+    raw = row["details"]
+    if not raw:
+        return view
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        view["detail"] = raw
+        return view
+    if row["kind"] == "sync" and isinstance(data, dict):
+        summ = SyncSummary.from_json(raw)
+        if summ:
+            sections = []
+            for title, tracks in summ.tracks_new.items():
+                sections.append((f"New in {title}", tracks))
+            for title, tracks in summ.tracks_dropped.items():
+                sections.append((f"No longer in {title}", tracks))
+            if summ.downloaded_titles:
+                sections.append(("Downloaded", summ.downloaded_titles))
+            if summ.library_new:
+                sections.append(("New in your library", summ.library_new))
+            if summ.library_gone:
+                sections.append(("Left your library", summ.library_gone))
+            if summ.removals_queued:
+                sections.append(("Waiting for your OK to remove", summ.removals_queued))
+            if summ.failed:
+                sections.append(("Failed downloads", summ.failed))
+            if summ.errors:
+                sections.append(("Errors", summ.errors))
+            view["sections"] = sections
+    elif isinstance(data, list):
+        view["sections"] = [("Items", [str(x) for x in data])]
+    elif isinstance(data, dict):
+        view["detail"] = ", ".join(f"{k}: {v}" for k, v in data.items())
+    return view
+
+
+def _device_label(ua: str) -> str:
+    browser = next((b for b in ("Edg", "Firefox", "Chrome", "Safari") if b in ua), "Browser")
+    browser = {"Edg": "Edge"}.get(browser, browser)
+    system = next((o for o in ("Android", "iPhone", "iPad", "Windows", "Mac OS", "Linux") if o in ua), "")
+    system = {"Mac OS": "macOS"}.get(system, system)
+    return f"{browser} on {system}" if system else browser
 
 
 def _until(ts: float | None) -> str | None:

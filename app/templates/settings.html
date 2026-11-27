@@ -53,6 +53,36 @@
   </form>
 </section>
 
+<section class="card" id="notifications">
+  <h2>Notifications</h2>
+  <p class="muted small">You'll get a browser notification when something new shows up in your library (so you can decide whether to sync it), after every sync with a short summary, and when a sync fails.</p>
+  <div id="push-box" data-csrf="{{ csrf }}">
+    <p id="push-status" class="small">Checking this device…</p>
+    <button id="push-enable" class="primary" hidden>Turn on for this device</button>
+    <button id="push-disable" hidden>Turn off for this device</button>
+  </div>
+  {% if push_subs %}
+  <h3 class="small spaced-sm">Subscribed devices</h3>
+  <ul class="plain">
+    {% for d in push_subs %}
+    <li>{{ d.label or 'Device' }} <span class="muted small">· added {{ d.created_at|ago }}{% if d.last_ok %} · last delivered {{ d.last_ok|ago }}{% endif %}{% if d.failures %} · {{ d.failures }} failed deliveries{% endif %}</span>
+      <form method="post" action="/settings/push/remove" class="inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="sub_id" value="{{ d.id }}">
+        <button class="link">remove</button></form></li>
+    {% endfor %}
+  </ul>
+  <form method="post" action="/settings/push/test" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}"><button>Send a test notification</button>
+  </form>
+  {% endif %}
+  <form method="post" action="/settings/notifications" class="stack spaced-sm">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <label class="checkbox"><input type="checkbox" name="quiet" value="1" {% if notify_quiet %}checked{% endif %}>
+      Skip the after-sync notification when nothing changed</label>
+    <button>Save</button>
+  </form>
+</section>
+
 <section class="card" id="password">
   <h2>Password</h2>
   {% if pw_error %}<p class="notice err">{{ pw_error }}</p>{% endif %}

@@ -75,7 +75,7 @@ details summary { cursor: pointer; font-weight: 600; margin: .5rem 0; }
 .item.saving { opacity: .6; }
 
 .events { list-style: none; padding: 0; margin: 0; }
-.events li { padding: .5rem 0; border-bottom: 1px solid var(--border); }
+.events > li { padding: .5rem 0; border-bottom: 1px solid var(--border); }
 .events time { display: inline-block; min-width: 9.5rem; }
 .qr svg { display: block; max-width: 220px; height: auto; border-radius: 8px; }
 
@@ -94,3 +94,17 @@ table.tracks th, table.tracks td { text-align: left; padding: .55rem .75rem; bor
 table.tracks th { font-size: .8rem; color: var(--muted); font-weight: 600; }
 table.tracks tr.removed { opacity: .6; }
 @media (max-width: 600px) { table.tracks td:first-child, table.tracks th:first-child { display: none; } }
+ul.plain { list-style: none; padding: 0; margin: .25rem 0 1rem; }
+ul.plain li { padding: .35rem 0; border-bottom: 1px solid var(--border); }
+.spaced-sm { margin-top: 1rem; }
+h3 { font-size: .95rem; margin: 0; }
+.history-filters { margin: 1rem 0; }
+a.tab { text-decoration: none; border: 1px solid var(--border); background: var(--surface); }
+h2.day { font-size: .95rem; margin: 1.5rem 0 .25rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.event { display: grid; grid-template-columns: 3.2rem auto 1fr; gap: .5rem; align-items: baseline; }
+.event time { min-width: 0 !important; }
+.event details summary { font-weight: 400; margin: 0; }
+.event .section { margin: .5rem 0 .25rem; }
+.event .section ul { margin: .25rem 0 0; padding-left: 1.2rem; }
+.badge { white-space: nowrap; }
+@media (max-width: 600px) { .event { grid-template-columns: auto 1fr; } .event > span:last-child, .event details { grid-column: 1 / -1; } }
