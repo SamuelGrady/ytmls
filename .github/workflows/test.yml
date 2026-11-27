@@ -18,5 +18,5 @@ jobs:
       - name: Smoke-test the image's tools
         run: |
           docker run --rm --read-only --tmpfs /tmp --user 1000:1000 ytmls:ci sh -c \
-            'ffmpeg -version | head -1 && deno --version | head -1 && python -c "import yt_dlp, mutagen; print(yt_dlp.version.__version__)"'
+            'ffmpeg -version | head -1 && ffprobe -version | head -1 && deno --version | head -1 && python -c "import yt_dlp, mutagen; print(yt_dlp.version.__version__)"'
 

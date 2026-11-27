@@ -1,7 +1,9 @@
-"""File layout, MP3 encoding and ID3 tagging."""
+"""File layout, keeping YouTube's audio stream as it is, and tagging."""
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 import re
 import shutil
@@ -11,15 +13,22 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from mutagen.flac import Picture
 from mutagen.id3 import APIC, ID3, TALB, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK, TXXX
+from mutagen.mp4 import MP4, MP4Cover, MP4FreeForm
+from mutagen.oggopus import OggOpus
 
-MP3_QUALITIES = {
-    "320": ["-b:a", "320k"],
-    "256": ["-b:a", "256k"],
-    "192": ["-b:a", "192k"],
-    "V0": ["-q:a", "0"],
+# YouTube's streams are already lossy, so YTMLS never re-encodes them. Each codec
+# is copied as it is into a container Jellyfin reads and that can hold tags:
+# codec name (as ffprobe reports it) -> (file suffix, ffmpeg muxer).
+CONTAINERS = {
+    "opus": (".opus", "opus"),  # Ogg Opus: the usual stream (251, or 774 with Premium)
+    "aac": (".m4a", "ipod"),    # MP4 audio: 140, or 141 with Premium
+    "mp3": (".mp3", "mp3"),
 }
-DEFAULT_QUALITY = "320"
+AUDIO_SUFFIXES = {".opus", ".m4a", ".mp3"}
+DEFAULT_SUFFIX = ".opus"
+MP4_VIDEO_ID = "----:com.apple.iTunes:YouTube Video ID"
 MAX_COVER_BYTES = 10 * 1024 * 1024
 PLAYLIST_DIR = "Playlists"
 ARTIST_NFO = "artist.nfo"
@@ -38,7 +47,7 @@ class TrackMeta:
     track_number: int | None
     year: str | None
     cover_url: str | None
-    # Kept out of Jellyfin's albums: stored as Artist/Title.mp3 with no album tag.
+    # Kept out of Jellyfin's albums: stored as Artist/Title.opus with no album tag.
     loose: bool = False
 
 
@@ -94,20 +103,20 @@ def safe_name(name: str, fallback: str = "Unknown", max_len: int = 120) -> str:
     return name
 
 
-def track_relpath(meta: TrackMeta) -> Path:
-    """Jellyfin's preferred layout: Album Artist/Album/NN - Title.mp3
+def track_relpath(meta: TrackMeta, suffix: str = DEFAULT_SUFFIX) -> Path:
+    """Jellyfin's preferred layout: Album Artist/Album/NN - Title.opus
 
     Loose tracks (singles, when that setting is on) go straight into the artist
-    folder as Album Artist/Title.mp3.
+    folder as Album Artist/Title.opus. ``suffix`` is the file's audio format.
     """
     artist_dir = safe_name(meta.album_artist, "Unknown Artist")
     stem = safe_name(meta.title, meta.video_id)
     if meta.loose:
-        return Path(artist_dir) / f"{stem}.mp3"
+        return Path(artist_dir) / f"{stem}{suffix}"
     album_dir = safe_name(meta.album, "Unknown Album")
     if meta.track_number:
         stem = f"{meta.track_number:02d} - {stem}"
-    return Path(artist_dir) / album_dir / f"{stem}.mp3"
+    return Path(artist_dir) / album_dir / f"{stem}{suffix}"
 
 
 def ensure_inside(root: Path, rel: Path) -> Path:
@@ -139,18 +148,57 @@ def fetch_cover(url: str | None, timeout: float = 20) -> tuple[bytes, str] | Non
     return data, mime
 
 
-def encode_mp3(src: Path, dest: Path, quality: str = DEFAULT_QUALITY) -> None:
-    args = MP3_QUALITIES.get(quality, MP3_QUALITIES[DEFAULT_QUALITY])
+def probe_codec(src: Path) -> str:
+    ffprobe = shutil.which("ffprobe") or "ffprobe"
+    cmd = [ffprobe, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name",
+           "-of", "json", str(src)]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {result.stderr.strip()[-500:]}")
+    streams = json.loads(result.stdout or "{}").get("streams") or []
+    if not streams:
+        raise RuntimeError("The download has no audio stream")
+    return str(streams[0].get("codec_name") or "")
+
+
+def remux_audio(src: Path, workdir: Path) -> Path:
+    """Copy the audio stream, untouched, into a taggable container. Returns the new file.
+
+    YouTube sends Opus inside WebM and AAC inside fragmented MP4, which most taggers
+    and some players handle badly. Moving the stream into Ogg Opus or a plain M4A
+    keeps every bit of the audio: nothing is decoded or encoded.
+    """
+    codec = probe_codec(src)
+    if codec not in CONTAINERS:
+        raise RuntimeError(f"YouTube sent {codec or 'an unknown'} audio, which YTMLS can't store without "
+                           "re-encoding")
+    suffix, muxer = CONTAINERS[codec]
+    dest = workdir / f"out{suffix}"
     ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
     cmd = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src),
-           "-map", "0:a:0", "-vn", "-map_metadata", "-1", "-codec:a", "libmp3lame", *args, "-f", "mp3", str(dest)]
+           "-map", "0:a:0", "-vn", "-map_metadata", "-1", "-codec:a", "copy"]
+    if muxer == "ipod":
+        cmd += ["-movflags", "+faststart"]
+    cmd += ["-f", muxer, str(dest)]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg failed: {result.stderr.strip()[-500:]}")
+    return dest
 
 
 def write_tags(path: Path, meta: TrackMeta, cover: tuple[bytes, str] | None) -> None:
-    tags = ID3()  # saving a fresh tag replaces whatever ffmpeg wrote
+    """Replace a file's tags with ``meta`` (and ``cover``), in the file's own tag format."""
+    suffix = path.suffix.lower()
+    if suffix == ".opus":
+        _write_vorbis(path, meta, cover)
+    elif suffix == ".m4a":
+        _write_mp4(path, meta, cover)
+    else:
+        _write_id3(path, meta, cover)
+
+
+def _write_id3(path: Path, meta: TrackMeta, cover: tuple[bytes, str] | None) -> None:
+    tags = ID3()  # saving a fresh tag replaces whatever was there
     tags.add(TIT2(encoding=3, text=meta.title))
     tags.add(TPE1(encoding=3, text=meta.artists or meta.album_artist))
     tags.add(TPE2(encoding=3, text=meta.album_artist))
@@ -168,6 +216,54 @@ def write_tags(path: Path, meta: TrackMeta, cover: tuple[bytes, str] | None) -> 
     tags.save(str(path), v2_version=3)
 
 
+def _write_vorbis(path: Path, meta: TrackMeta, cover: tuple[bytes, str] | None) -> None:
+    audio = OggOpus(str(path))
+    if audio.tags is None:
+        audio.add_tags()
+    audio.tags.clear()
+    audio["TITLE"] = meta.title
+    audio["ARTIST"] = meta.artists or meta.album_artist
+    audio["ALBUMARTIST"] = meta.album_artist
+    if not meta.loose:
+        audio["ALBUM"] = meta.album
+        if meta.track_number:
+            audio["TRACKNUMBER"] = str(meta.track_number)
+        audio["DISCNUMBER"] = "1"
+    if meta.year:
+        audio["DATE"] = str(meta.year)
+    audio["YOUTUBE_VIDEO_ID"] = meta.video_id
+    if cover:
+        pic = Picture()
+        pic.type = 3
+        pic.mime = cover[1]
+        pic.desc = "Cover"
+        pic.data = cover[0]
+        audio["METADATA_BLOCK_PICTURE"] = base64.b64encode(pic.write()).decode("ascii")
+    audio.save()
+
+
+def _write_mp4(path: Path, meta: TrackMeta, cover: tuple[bytes, str] | None) -> None:
+    audio = MP4(str(path))
+    if audio.tags is None:
+        audio.add_tags()
+    audio.tags.clear()
+    audio["\xa9nam"] = [meta.title]
+    audio["\xa9ART"] = [meta.artists or meta.album_artist]
+    audio["aART"] = [meta.album_artist]
+    if not meta.loose:
+        audio["\xa9alb"] = [meta.album]
+        if meta.track_number:
+            audio["trkn"] = [(meta.track_number, 0)]
+        audio["disk"] = [(1, 0)]
+    if meta.year:
+        audio["\xa9day"] = [str(meta.year)]
+    audio[MP4_VIDEO_ID] = [MP4FreeForm(meta.video_id.encode("utf-8"))]
+    if cover:
+        fmt = MP4Cover.FORMAT_PNG if cover[1] == "image/png" else MP4Cover.FORMAT_JPEG
+        audio["covr"] = [MP4Cover(cover[0], imageformat=fmt)]
+    audio.save()
+
+
 def sniff_image(data: bytes) -> str | None:
     if data.startswith(b"\xff\xd8\xff"):
         return "image/jpeg"
@@ -177,11 +273,22 @@ def sniff_image(data: bytes) -> str | None:
 
 
 def read_cover(path: Path) -> tuple[bytes, str] | None:
+    suffix = path.suffix.lower()
     try:
-        tags = ID3(str(path))
+        if suffix == ".opus":
+            for value in OggOpus(str(path)).get("METADATA_BLOCK_PICTURE", []):
+                pic = Picture(base64.b64decode(value))
+                return pic.data, pic.mime or sniff_image(pic.data) or "image/jpeg"
+            return None
+        if suffix == ".m4a":
+            covers = (MP4(str(path)).tags or {}).get("covr") or []
+            if not covers:
+                return None
+            data = bytes(covers[0])
+            return data, "image/png" if covers[0].imageformat == MP4Cover.FORMAT_PNG else "image/jpeg"
+        pics = ID3(str(path)).getall("APIC")
     except Exception:
         return None
-    pics = tags.getall("APIC")
     return (pics[0].data, pics[0].mime) if pics else None
 
 
@@ -249,7 +356,7 @@ def remove_our_nfo_if_unneeded(music_dir: Path, artist_dir: Path) -> None:
     nfo = folder / ARTIST_NFO
     if not nfo.exists() or not _is_our_nfo(nfo):
         return
-    if any(p.is_file() and p.suffix.lower() == ".mp3" for p in folder.iterdir()):
+    if any(p.is_file() and p.suffix.lower() in AUDIO_SUFFIXES for p in folder.iterdir()):
         return
     nfo.unlink()
     prune_empty(music_dir, folder)

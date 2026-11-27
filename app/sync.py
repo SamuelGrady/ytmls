@@ -36,7 +36,6 @@ MAX_CONSECUTIVE_FAILURES = 5
 
 DEFAULTS = {
     "sync_interval_hours": "6",
-    "mp3_quality": media.DEFAULT_QUALITY,
     "premium_quality": "0",
     "max_downloads_per_run": "200",
     "download_delay_seconds": "3",
@@ -559,8 +558,8 @@ class SyncEngine:
         mime = media.sniff_image(data)
         return (data, mime) if mime else None
 
-    def target_path(self, meta: TrackMeta) -> Path:
-        return self._target_path(meta)
+    def target_path(self, meta: TrackMeta, suffix: str) -> Path:
+        return self._target_path(meta, suffix)
 
     def singles_loose(self) -> bool:
         return get_option(self.db, "singles_loose") == "1"
@@ -630,7 +629,7 @@ class SyncEngine:
                 src = media.ensure_inside(self.music_dir, current)
                 if not src.exists():
                     continue
-                target = self._target_path(meta)
+                target = self._target_path(meta, current.suffix)
                 media.retag(src, meta)
                 media.move_track(self.music_dir, t["file_path"], target)
             except (OSError, ValueError) as exc:
@@ -656,13 +655,13 @@ class SyncEngine:
             self.db.log_event("layout", f"Moved {moved} song{'s' if moved != 1 else ''}: {', '.join(parts)}")
         return moved
 
-    def _target_path(self, meta: TrackMeta) -> Path:
-        rel = media.track_relpath(meta)
+    def _target_path(self, meta: TrackMeta, suffix: str) -> Path:
+        rel = media.track_relpath(meta, suffix)
         clash = self.db.one("SELECT video_id FROM tracks WHERE file_path = ? AND video_id != ?",
                             (rel.as_posix(), meta.video_id))
         if clash or ((self.music_dir / rel).exists() and not self.db.one(
                 "SELECT 1 FROM tracks WHERE file_path = ?", (rel.as_posix(),))):
-            rel = rel.with_name(f"{rel.stem} [{meta.video_id}].mp3")
+            rel = rel.with_name(f"{rel.stem} [{meta.video_id}]{suffix}")
         return rel
 
     def _download_missing(self, netscape: str, gen: str | None, summary: SyncSummary) -> None:
@@ -675,7 +674,6 @@ class SyncEngine:
         limit = int(get_option(self.db, "max_downloads_per_run"))
         delay = float(get_option(self.db, "download_delay_seconds"))
         premium = get_option(self.db, "premium_quality") == "1"
-        quality = get_option(self.db, "mp3_quality")
         summary.deferred = max(0, len(todo) - limit)
         todo = todo[:limit]
 
@@ -690,11 +688,11 @@ class SyncEngine:
             for n, t in enumerate(todo, start=1):
                 self.progress = {"phase": "Downloading", "done": n - 1, "total": len(todo), "current": t["title"]}
                 meta = self.meta_for(t, rules)
-                rel = self._target_path(meta)
                 try:
-                    produce_track(self.downloader, meta, self.music_dir, rel, cookies_file,
-                                  premium=premium, quality=quality, tmp_root=self.tmp_root,
-                                  cover_override=self._custom_cover(t["custom_cover"]))
+                    rel, _ = produce_track(self.downloader, meta, self.music_dir,
+                                           lambda suffix, meta=meta: self._target_path(meta, suffix),
+                                           cookies_file, premium=premium, tmp_root=self.tmp_root,
+                                           cover_override=self._custom_cover(t["custom_cover"]))
                 except Exception as exc:
                     consecutive += 1
                     msg = str(exc).splitlines()[0][:400] if str(exc) else type(exc).__name__
