@@ -44,6 +44,8 @@ class Settings:
     # Public address, e.g. https://music.example.com. Used to accept form posts
     # whose Origin is the tunnel hostname even if the proxy rewrites Host.
     public_url: str | None
+    # "sub" claim for Web Push (a mailto: or https: contact); push services require one.
+    vapid_subject: str
     session_idle_hours: int
     session_max_days: int
     # Lockout policy
@@ -67,6 +69,7 @@ def load_settings() -> Settings:
         cookie_secure=_tristate("YTMLS_COOKIE_SECURE"),
         public_url=(os.environ.get("YTMLS_PUBLIC_URL") or "").strip().rstrip("/") or None,
         trust_proxy_headers=_bool("YTMLS_TRUST_PROXY_HEADERS", False),
+        vapid_subject=os.environ.get("YTMLS_VAPID_SUBJECT") or "mailto:ytmls@example.com",
         session_idle_hours=_int("YTMLS_SESSION_IDLE_HOURS", 72),
         session_max_days=_int("YTMLS_SESSION_MAX_DAYS", 30),
         ip_max_failures=_int("YTMLS_IP_MAX_FAILURES", 5),

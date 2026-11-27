@@ -106,8 +106,26 @@ class FakeDownloader:
         return out, "251 opus 160kbps"
 
 
+class FakePush:
+    sent: list = []
+    fail_status: int | None = None
+
+    def __call__(self, subscription_info, data, vapid_private_key, vapid_claims, ttl, timeout):
+        import json
+        if FakePush.fail_status:
+            class Resp:
+                status_code = FakePush.fail_status
+            err = RuntimeError("push failed")
+            err.response = Resp()
+            raise err
+        FakePush.sent.append({"endpoint": subscription_info["endpoint"], **json.loads(data),
+                              "sub": vapid_claims["sub"]})
+
+
 @pytest.fixture(autouse=True)
 def reset_downloader():
+    FakePush.sent = []
+    FakePush.fail_status = None
     FakeDownloader.calls = []
     FakeDownloader.fail_ids = set()
 
@@ -116,7 +134,8 @@ def reset_downloader():
 def app(settings, monkeypatch):
     # Covers are fetched from the internet in production; stub it out.
     monkeypatch.setattr("app.media.fetch_cover", lambda url, timeout=20: (b"\xff\xd8\xff\xe0fakejpeg", "image/jpeg"))
-    app = create_app(settings, ytm_factory=FakeYTM, downloader=FakeDownloader(), start_scheduler=False)
+    app = create_app(settings, ytm_factory=FakeYTM, downloader=FakeDownloader(), start_scheduler=False,
+                     push_sender=FakePush())
     app.state.engine.sleep = lambda s: None
     return app
 

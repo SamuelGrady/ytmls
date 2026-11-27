@@ -10,7 +10,7 @@ YTMLS **only reads** your YouTube Music account. It never likes, adds, removes o
 | --- | --- | --- |
 | 1. Foundation | Container, secure dashboard login, encrypted YouTube cookies, library list with sync checkboxes | Done |
 | 2. Sync engine | Scheduled downloads (every 4 to 6 h), MP3 with tags and cover art, Jellyfin folder layout, `.m3u8` playlists, removals waiting for confirmation, optional Premium quality | Done |
-| 3. Notifications and history | Browser push for new library items, sync summaries and removals waiting for you, plus a full change history | Planned (basic history page exists) |
+| 3. Notifications and history | Browser push for new library items, sync summaries and removals waiting for you, plus a full change history | Done |
 | 4. Metadata editor | Edit tags and cover art in the dashboard, optional Jellyfin rescan | Planned |
 
 Subscribed artists are left out for now.
@@ -59,6 +59,20 @@ Cookies eventually expire. When a refresh fails, the dashboard tells you, and yo
 - **Failures:** a failed download is retried on later runs, up to 5 times. You can retry it sooner from the album or playlist's page.
 - **Read-only:** yt-dlp runs with `mark_watched` off, so nothing appears in your YouTube watch history.
 
+## Notifications
+
+Open **Settings → Notifications** on each device and press **Turn on for this device**. You'll get:
+
+- a notification when new albums or playlists appear in your library, so you can decide whether to sync them (tapping it opens the library filtered to new items)
+- a short summary after every sync: what was downloaded, which playlists got new songs, and any removals waiting for you (you can skip it when nothing changed)
+- a notification when a sync fails, for example because your cookies expired
+
+Push notifications need HTTPS, so turn them on while using your Cloudflare Tunnel address. On iPhone or iPad, add YTMLS to your Home Screen first (Share → Add to Home Screen), because Safari only allows web push for installed web apps. Set `YTMLS_VAPID_SUBJECT` to a `mailto:` address or your site URL if you want push services to have a real contact.
+
+## History
+
+The **History** page records every change, grouped by day. You can filter it to syncs, library changes, tracks, removals, your sync choices, or account and security events. Each sync can be expanded to show exactly what it downloaded, what changed in each playlist, and what's waiting for removal.
+
 ### Keeping yt-dlp current
 
 YouTube changes often, and old yt-dlp versions stop working. If downloads start failing for every track, rebuild the image to pick up the newest yt-dlp:
@@ -101,6 +115,7 @@ The dashboard is built to be reachable from the internet, but put more than one 
 | `YTMLS_PUBLIC_URL` | (none) | Your tunnel address, e.g. `https://music.example.com`. Accepted as a valid form origin |
 | `YTMLS_TRUST_PROXY_HEADERS` | `false` | Use `CF-Connecting-IP` / `X-Forwarded-For` as the client IP |
 | `YTMLS_SECRET_KEY` / `YTMLS_SECRET_KEY_FILE` | (generated) | Encryption key for stored secrets |
+| `YTMLS_VAPID_SUBJECT` | `mailto:ytmls@example.com` | Contact sent to push services with each notification |
 | `YTMLS_SESSION_IDLE_HOURS` | `72` | Idle session timeout |
 | `YTMLS_SESSION_MAX_DAYS` | `30` | Absolute session lifetime |
 | `YTMLS_IP_MAX_FAILURES` | `5` | Failed sign-ins per IP before lockout |

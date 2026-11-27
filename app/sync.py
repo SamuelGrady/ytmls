@@ -54,6 +54,7 @@ class SyncSummary:
     tracks_new: dict[str, list[str]] = field(default_factory=dict)       # item title -> track titles
     tracks_dropped: dict[str, list[str]] = field(default_factory=dict)   # item title -> track titles
     downloaded: int = 0
+    downloaded_titles: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
     deferred: int = 0
     removals_queued: list[str] = field(default_factory=list)
@@ -63,6 +64,27 @@ class SyncSummary:
 
     def to_json(self) -> str:
         return json.dumps(self.__dict__)
+
+    @classmethod
+    def from_json(cls, raw: str | None) -> "SyncSummary | None":
+        if not raw:
+            return None
+        data = json.loads(raw)
+        known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+        return cls(**known)
+
+    def detail_lines(self, include_library: bool = True) -> list[str]:
+        lines = []
+        for title, tracks in self.tracks_new.items():
+            lines.append(f"{title}: {len(tracks)} new ({', '.join(tracks[:3])}{'…' if len(tracks) > 3 else ''})")
+        if self.library_new and include_library:
+            lines.append(f"New in library: {', '.join(self.library_new[:3])}{'…' if len(self.library_new) > 3 else ''}")
+        if self.removals_queued:
+            lines.append(f"Waiting for your OK to remove: {', '.join(self.removals_queued[:3])}"
+                         f"{'…' if len(self.removals_queued) > 3 else ''}")
+        if self.failed:
+            lines.append(f"Failed: {', '.join(self.failed[:3])}{'…' if len(self.failed) > 3 else ''}")
+        return lines
 
     def headline(self) -> str:
         parts = []
@@ -110,6 +132,8 @@ class SyncEngine:
         self.sleep = sleep
         self._lock = threading.Lock()
         self.progress: dict[str, Any] = {}
+        # Called after every run with (status, summary, error).
+        self.on_finished: Callable[[str, SyncSummary, str | None], None] | None = None
 
     @property
     def running(self) -> bool:
@@ -133,7 +157,7 @@ class SyncEngine:
             source = self.source_factory(parse_cookies(netscape).cookie_header)
 
             lib = refresh_library(self.db, source)
-            summary.library_new = [e.title for e in lib.added]
+            summary.library_new = [] if lib.first_import else [e.title for e in lib.added]
             summary.library_gone = list(lib.removed)
 
             self.progress = {"phase": "Reading synced albums and playlists"}
@@ -157,6 +181,11 @@ class SyncEngine:
             )
             self.db.log_event("sync", f"Sync finished ({trigger}): {summary.headline()}", summary.to_json())
             self._lock.release()
+        if self.on_finished:
+            try:
+                self.on_finished(status, summary, error)
+            except Exception:
+                log.exception("on_finished hook failed")
         return summary
 
     # ------------------------------------------------------------ tracks
@@ -373,7 +402,8 @@ class SyncEngine:
                 (p["id"], f"Playlist file: {p['title']}", p["playlist_file"], reason, now))
             summary.removals_queued.append(f"Playlist file: {p['title']}")
         if summary.removals_queued:
-            self.db.log_event("removal", f"{len(summary.removals_queued)} removals waiting for confirmation",
+            n = len(summary.removals_queued)
+            self.db.log_event("removal", f"{n} removal{'s' if n != 1 else ''} waiting for confirmation",
                               json.dumps(summary.removals_queued))
 
     def decide_removal(self, removal_id: int, delete: bool) -> str | None:
@@ -469,6 +499,7 @@ class SyncEngine:
                         "downloaded_at = ?, updated_at = ? WHERE video_id = ?",
                         (rel.as_posix(), time.time(), time.time(), t["video_id"]))
                     summary.downloaded += 1
+                    summary.downloaded_titles.append(t["title"])
                 if delay and n < len(todo):
                     self.sleep(delay)
         finally:
