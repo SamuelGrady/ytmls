@@ -108,3 +108,16 @@ h2.day { font-size: .95rem; margin: 1.5rem 0 .25rem; color: var(--muted); text-t
 .event .section ul { margin: .25rem 0 0; padding-left: 1.2rem; }
 .badge { white-space: nowrap; }
 @media (max-width: 600px) { .event { grid-template-columns: auto 1fr; } .event > span:last-child, .event details { grid-column: 1 / -1; } }
+.track-head { display: flex; gap: 1.25rem; align-items: flex-start; flex-wrap: wrap; margin-bottom: 1rem; }
+.track-head .cover { width: 160px; height: 160px; object-fit: cover; border-radius: 10px; background: var(--border); }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
+a.item-row { text-decoration: none; }
+.pager { display: flex; gap: 1rem; justify-content: center; margin-top: 1rem; }
+ul.checklist { list-style: none; padding: 0; margin: .5rem 0 0; }
+ul.checklist li { display: flex; gap: .65rem; padding: .45rem 0; border-bottom: 1px solid var(--border); }
+ul.checklist .mark { flex: none; width: 1.4rem; height: 1.4rem; border-radius: 999px; display: inline-grid; place-items: center;
+  font-size: .8rem; font-weight: 700; border: 1px solid currentColor; }
+ul.checklist li.ok .mark { color: var(--ok); }
+ul.checklist li.todo .mark { color: var(--err); }
+ul.checklist li.opt .mark { color: var(--muted); }
+details.card > summary { margin: 0; }

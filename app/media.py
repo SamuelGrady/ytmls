@@ -157,6 +157,46 @@ def write_tags(path: Path, meta: TrackMeta, cover: tuple[bytes, str] | None) -> 
     tags.save(str(path), v2_version=3)
 
 
+def sniff_image(data: bytes) -> str | None:
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    return None
+
+
+def read_cover(path: Path) -> tuple[bytes, str] | None:
+    try:
+        tags = ID3(str(path))
+    except Exception:
+        return None
+    pics = tags.getall("APIC")
+    return (pics[0].data, pics[0].mime) if pics else None
+
+
+def retag(path: Path, meta: TrackMeta, cover: tuple[bytes, str] | None = None) -> None:
+    """Rewrite a file's tags, keeping its current cover unless a new one is given."""
+    write_tags(path, meta, cover if cover is not None else read_cover(path))
+
+
+def move_track(music_dir: Path, old_rel: str, new_rel: Path) -> None:
+    """Move a track within the music folder and prune folders left empty."""
+    src = ensure_inside(music_dir, Path(old_rel))
+    dest = ensure_inside(music_dir, new_rel)
+    if src == dest:
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(src, dest)
+    parent = src.parent
+    root = music_dir.resolve()
+    while parent != root and parent.is_relative_to(root):
+        try:
+            parent.rmdir()
+        except OSError:
+            break
+        parent = parent.parent
+
+
 def write_m3u(music_dir: Path, playlist_title: str, playlist_id: str, entries: list[tuple[str, int, str]]) -> Path:
     """Write an extended M3U8 playlist with paths relative to the playlist file.
 

@@ -182,3 +182,9 @@ document.querySelectorAll("[data-confirm]").forEach((btn) => {
 
   refresh();
 })();
+
+document.querySelectorAll('img[src^="/covers/"]').forEach((img) => {
+  const hide = () => { img.style.visibility = "hidden"; };
+  if (img.complete && img.naturalWidth === 0) hide();
+  img.addEventListener("error", hide);
+});

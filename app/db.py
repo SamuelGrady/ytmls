@@ -135,6 +135,11 @@ MIGRATIONS: list[str] = [
         failures INTEGER NOT NULL DEFAULT 0
     );
     """,
+    # 4: metadata editing
+    """
+    ALTER TABLE tracks ADD COLUMN meta_locked INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE tracks ADD COLUMN custom_cover TEXT;
+    """,
 ]
 
 

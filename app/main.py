@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import segno
 from fastapi import Body, FastAPI, File, Form, Request, UploadFile
@@ -25,7 +25,9 @@ from .downloader import Downloader, YtDlpDownloader
 from .library import refresh_library
 from .media import MP3_QUALITIES
 from .notify import Notifier
-from .sync import DEFAULTS, Scheduler, SyncEngine, SyncSummary, get_option
+from .editor import EditError, MetadataEditor
+from .jellyfin import Jellyfin, JellyfinError
+from .sync import DEFAULTS, Scheduler, SyncBusy, SyncEngine, SyncSummary, get_option
 from .security import LoginThrottle, Session, SessionStore, Vault
 from .ytm import CookieError, LibrarySource, ReadOnlyYTMusic, parse_cookies
 
@@ -37,6 +39,12 @@ PRE_COOKIE = "ytmls_pre"
 MAX_COOKIE_UPLOAD = 512 * 1024
 
 MESSAGES = {
+    "track_saved": "Saved. The file's tags were updated.",
+    "album_saved": "Album details saved to every track.",
+    "nothing_changed": "Nothing changed.",
+    "jellyfin_saved": "Jellyfin connection saved.",
+    "jellyfin_removed": "Jellyfin connection removed.",
+    "jellyfin_refresh": "Asked Jellyfin to rescan your libraries.",
     "cookies_saved": "YouTube Music cookies saved and verified.",
     "cookies_removed": "YouTube Music cookies removed.",
     "password_changed": "Password changed. Other sessions were signed out.",
@@ -102,7 +110,12 @@ def create_app(
     scheduler = Scheduler(engine, db)
     notifier = Notifier(db, vault, settings.vapid_subject, sender=push_sender, background=push_sender is None)
 
+    jellyfin = Jellyfin(db, vault)
+    editor = MetadataEditor(db, engine, settings.music_dir)
+
     def after_sync(status: str, summary: SyncSummary, error: str | None) -> None:
+        if summary.downloaded and db.get_setting("jellyfin_auto") != "0":
+            jellyfin.request_refresh(delay=5)
         notifier.new_library_items(summary.library_new)
         notifier.sync_finished(status, summary.headline(), summary.detail_lines(include_library=False),
                                len(summary.removals_queued), error,
@@ -124,6 +137,8 @@ def create_app(
     app.state.engine = engine
     app.state.scheduler = scheduler
     app.state.notifier = notifier
+    app.state.jellyfin = jellyfin
+    app.state.editor = editor
     app.state.db = db
     app.state.settings = settings
     app.state.setup_token = None
@@ -505,7 +520,12 @@ def create_app(
             "SELECT t.*, it.position, it.removed_at AS link_removed FROM item_tracks it "
             "JOIN tracks t ON t.video_id = it.video_id WHERE it.item_id = ? "
             "ORDER BY it.removed_at IS NOT NULL, it.position", (item_id,))
-        return render(request, "item.html", {"s": s, "csrf": s.csrf_token, "item": item, "tracks": tracks})
+        first = next((t for t in tracks if not t["link_removed"]), None)
+        album = {"album": first["album"], "album_artist": first["album_artist"], "year": first["year"]} \
+            if first else {"album": item["title"], "album_artist": item["subtitle"], "year": item["year"]}
+        error = db.get_setting("last_edit_error") if request.query_params.get("error") == "edit" else None
+        return render(request, "item.html", {"s": s, "csrf": s.csrf_token, "item": item, "tracks": tracks,
+                                             "album": album, "error": error})
 
     @app.post("/tracks/{video_id}/retry")
     def track_retry(request: Request, video_id: str, csrf_token: str = Form(""), back: str = Form("/")):
@@ -531,8 +551,12 @@ def create_app(
         require_csrf(request, s, csrf_token)
         if action not in {"delete", "keep"}:
             return RedirectResponse("/removals", status_code=303)
+        deleted = 0
         for rid in ids[:5000]:
-            engine.decide_removal(rid, delete=(action == "delete"))
+            if engine.decide_removal(rid, delete=(action == "delete")) == "deleted":
+                deleted += 1
+        if deleted and db.get_setting("jellyfin_auto") != "0":
+            jellyfin.request_refresh()
         return RedirectResponse("/removals?msg=removals_done", status_code=303)
 
     @app.post("/settings/sync")
@@ -544,7 +568,7 @@ def create_app(
             hours = min(48.0, max(1.0, float(interval)))
             per_run = min(2000, max(1, int(max_per_run)))
         except ValueError:
-            return render(request, "settings.html", settings_ctx(s, sync_error="Enter numbers for the interval "
+            return render(request, "settings.html", settings_ctx(request, s, sync_error="Enter numbers for the interval "
                                                                     "and the per-run limit."), 400)
         if quality not in MP3_QUALITIES:
             quality = DEFAULTS["mp3_quality"]
@@ -610,6 +634,129 @@ def create_app(
         db.set_setting("notify_quiet_unchanged", "1" if quiet else "0")
         return RedirectResponse("/settings?msg=notify_saved#notifications", status_code=303)
 
+    # ------------------------------------------------------------ metadata editor
+
+    @app.get("/tracks")
+    def tracks_page(request: Request, q: str = "", page: int = 1):
+        s = require(request)
+        page = max(1, page)
+        like = f"%{q.strip()[:100]}%"
+        where = "WHERE status = 'downloaded'"
+        params: tuple = ()
+        if q.strip():
+            where += " AND (title LIKE ? OR artists LIKE ? OR album LIKE ? OR album_artist LIKE ?)"
+            params = (like, like, like, like)
+        total = db.one(f"SELECT COUNT(*) AS n FROM tracks {where}", params)["n"]
+        rows = db.all(f"SELECT * FROM tracks {where} ORDER BY album_artist COLLATE NOCASE, album COLLATE NOCASE, "
+                      f"track_number, title COLLATE NOCASE LIMIT 100 OFFSET ?", (*params, (page - 1) * 100))
+        return render(request, "tracks.html", {"s": s, "csrf": s.csrf_token, "tracks": rows, "q": q,
+                                               "page": page, "pages": max(1, -(-total // 100)), "total": total})
+
+    @app.get("/tracks/{video_id}")
+    def track_page(request: Request, video_id: str, error: str | None = None):
+        s = require(request)
+        t = db.one("SELECT * FROM tracks WHERE video_id = ?", (video_id,))
+        if t is None:
+            return Response("Not found", status_code=404)
+        items = db.all("SELECT li.id, li.title, li.kind FROM item_tracks it JOIN library_items li ON li.id = it.item_id "
+                       "WHERE it.video_id = ? AND it.removed_at IS NULL", (video_id,))
+        return render(request, "track.html", {"s": s, "csrf": s.csrf_token, "t": t, "items": items,
+                                              "error": error, "back": request.query_params.get("back")})
+
+    @app.post("/tracks/{video_id}")
+    async def track_save(request: Request, video_id: str):
+        s = require(request)
+        form = await request.form()
+        require_csrf(request, s, str(form.get("csrf_token") or ""))
+        raw = {k: str(form.get(k) or "") for k in ("title", "artists", "album", "album_artist", "track_number", "year")}
+        upload = form.get("cover")
+        cover = await upload.read(10 * 1024 * 1024 + 1) if getattr(upload, "filename", None) else None
+        reset = form.get("reset_cover") == "1"
+        from starlette.concurrency import run_in_threadpool
+        try:
+            result = await run_in_threadpool(editor.edit_track, video_id, raw, cover, reset)
+        except EditError as exc:
+            return track_page(request, video_id, error=str(exc))
+        except SyncBusy:
+            return track_page(request, video_id, error="A sync is running. Try again when it finishes.")
+        if result.changed and db.get_setting("jellyfin_auto") != "0":
+            jellyfin.request_refresh()
+        msg = "track_saved" if result.changed else "nothing_changed"
+        return RedirectResponse(f"/tracks/{quote(video_id)}?msg={msg}", status_code=303)
+
+    @app.post("/items/{item_id}/album")
+    async def album_save(request: Request, item_id: str):
+        s = require(request)
+        form = await request.form()
+        require_csrf(request, s, str(form.get("csrf_token") or ""))
+        raw = {k: str(form.get(k) or "") for k in ("album", "album_artist", "year")}
+        upload = form.get("cover")
+        cover = await upload.read(10 * 1024 * 1024 + 1) if getattr(upload, "filename", None) else None
+        from starlette.concurrency import run_in_threadpool
+        target = f"/items/{quote(item_id)}"
+        try:
+            changed = await run_in_threadpool(editor.edit_album, item_id, raw, cover)
+        except (EditError, SyncBusy) as exc:
+            db.set_setting("last_edit_error", str(exc) if isinstance(exc, EditError)
+                           else "A sync is running. Try again when it finishes.")
+            return RedirectResponse(f"{target}?error=edit", status_code=303)
+        if changed and db.get_setting("jellyfin_auto") != "0":
+            jellyfin.request_refresh()
+        return RedirectResponse(f"{target}?msg={'album_saved' if changed else 'nothing_changed'}", status_code=303)
+
+    @app.get("/covers/{video_id}")
+    def cover_image(request: Request, video_id: str):
+        require(request)
+        t = db.one("SELECT custom_cover, file_path, status FROM tracks WHERE video_id = ?", (video_id,))
+        data = None
+        if t and t["custom_cover"]:
+            try:
+                data = (engine.covers_dir / t["custom_cover"]).read_bytes()
+            except OSError:
+                data = None
+        if data is None and t and t["file_path"] and t["status"] == "downloaded":
+            from .media import ensure_inside, read_cover
+            got = read_cover(ensure_inside(settings.music_dir, Path(t["file_path"])))
+            data = got[0] if got else None
+        from .media import sniff_image
+        mime = sniff_image(data) if data else None
+        if not mime:
+            return Response(status_code=404)
+        return Response(data, media_type=mime, headers={"Cache-Control": "private, max-age=60"})
+
+    # ------------------------------------------------------------ jellyfin
+
+    @app.post("/settings/jellyfin")
+    def jellyfin_save(request: Request, csrf_token: str = Form(""), url: str = Form(""), api_key: str = Form(""),
+                      auto: str = Form("")):
+        s = require(request)
+        require_csrf(request, s, csrf_token)
+        try:
+            jellyfin.save(url, api_key.strip() or None)
+            if not db.get_setting("jellyfin_key_enc"):
+                raise JellyfinError("Enter an API key (Jellyfin Dashboard → API Keys).")
+            version = jellyfin.test()
+        except JellyfinError as exc:
+            return render(request, "settings.html", settings_ctx(request, s, jf_error=str(exc)), 400)
+        db.set_setting("jellyfin_auto", "1" if auto else "0")
+        db.log_event("settings", f"Connected to Jellyfin ({version})")
+        return RedirectResponse("/settings?msg=jellyfin_saved#jellyfin", status_code=303)
+
+    @app.post("/settings/jellyfin/refresh")
+    def jellyfin_refresh(request: Request, csrf_token: str = Form("")):
+        s = require(request)
+        require_csrf(request, s, csrf_token)
+        jellyfin.refresh_now()
+        return RedirectResponse("/settings?msg=jellyfin_refresh#jellyfin", status_code=303)
+
+    @app.post("/settings/jellyfin/remove")
+    def jellyfin_remove(request: Request, csrf_token: str = Form("")):
+        s = require(request)
+        require_csrf(request, s, csrf_token)
+        jellyfin.clear()
+        db.log_event("settings", "Disconnected Jellyfin")
+        return RedirectResponse("/settings?msg=jellyfin_removed#jellyfin", status_code=303)
+
     @app.get("/history")
     def history_page(request: Request, kind: str = "all", before: int | None = None):
         s = require(request)
@@ -640,7 +787,32 @@ def create_app(
 
     # ------------------------------------------------------------ settings
 
-    def settings_ctx(s: Session, **extra) -> dict[str, Any]:
+    def security_checklist(request: Request, user) -> list[dict[str, Any]]:
+        https = is_https(request)
+        access = bool(request.headers.get("cf-access-authenticated-user-email")
+                      or request.cookies.get("CF_Authorization"))
+        separate_key = bool(settings.secret_key) or bool(
+            settings.secret_key_file and not settings.secret_key_file.is_relative_to(settings.data_dir))
+        return [
+            {"ok": bool(user["totp_enabled"]), "label": "Two-factor authentication is on",
+             "fix": "Turn it on in the Two-factor section below."},
+            {"ok": https, "label": "You're connected over HTTPS",
+             "fix": "Use your Cloudflare Tunnel address rather than plain http."},
+            {"ok": access, "label": "Cloudflare Access protects this page",
+             "fix": "Add a Cloudflare Access application for this hostname (Zero Trust → Access → Applications) "
+                    "so only you can reach the sign-in page.", "optional": True},
+            {"ok": bool(settings.public_url), "label": "YTMLS_PUBLIC_URL is set",
+             "fix": "Set it in compose.yaml to your tunnel address, e.g. https://music.example.com."},
+            {"ok": settings.cookie_secure is not False, "label": "Cookies are only sent over HTTPS",
+             "fix": "Remove YTMLS_COOKIE_SECURE=false (use auto or true)."},
+            {"ok": settings.trust_proxy_headers, "label": "Lockouts use the real visitor IP from the tunnel",
+             "fix": "Set YTMLS_TRUST_PROXY_HEADERS=true and keep the port bound to 127.0.0.1 (or unpublished)."},
+            {"ok": separate_key, "label": "Encryption key is kept outside the data folder",
+             "fix": "Optional: set YTMLS_SECRET_KEY_FILE to a Docker secret so backups of /data don't "
+                    "include the key.", "optional": True},
+        ]
+
+    def settings_ctx(request: Request, s: Session, **extra) -> dict[str, Any]:
         row = user_row(s.user_id)
         expiry = db.get_setting("ytm_cookies_expiry")
         ctx = {
@@ -654,6 +826,11 @@ def create_app(
             "push_subs": notifier.subscriptions(),
             "notify_quiet": db.get_setting("notify_quiet_unchanged") == "1",
             "qualities": list(MP3_QUALITIES),
+            "jellyfin_url": db.get_setting("jellyfin_url"),
+            "jellyfin_has_key": db.get_setting("jellyfin_key_enc") is not None,
+            "jellyfin_auto": db.get_setting("jellyfin_auto") != "0",
+            "jellyfin_last": json.loads(db.get_setting("jellyfin_last_refresh") or "null"),
+            "checklist": security_checklist(request, row),
         }
         ctx.update(extra)
         return ctx
@@ -661,7 +838,7 @@ def create_app(
     @app.get("/settings")
     def settings_page(request: Request):
         s = require(request)
-        return render(request, "settings.html", settings_ctx(s))
+        return render(request, "settings.html", settings_ctx(request, s))
 
     @app.post("/settings/youtube")
     async def settings_youtube(
@@ -676,12 +853,12 @@ def create_app(
         if cookies_file is not None and cookies_file.filename:
             raw = await cookies_file.read(MAX_COOKIE_UPLOAD + 1)
             if len(raw) > MAX_COOKIE_UPLOAD:
-                return render(request, "settings.html", settings_ctx(s, yt_error="That file is too large."), 400)
+                return render(request, "settings.html", settings_ctx(request, s, yt_error="That file is too large."), 400)
             text = raw.decode("utf-8", errors="replace")
         try:
             parsed = parse_cookies(text)
         except CookieError as exc:
-            return render(request, "settings.html", settings_ctx(s, yt_error=str(exc)), 400)
+            return render(request, "settings.html", settings_ctx(request, s, yt_error=str(exc)), 400)
 
         previous = db.get_setting("ytm_cookies_enc")
         db.set_setting("ytm_cookies_enc", vault.encrypt(parsed.netscape))
@@ -690,7 +867,7 @@ def create_app(
             await run_in_threadpool(do_refresh)
         except CookieError as exc:
             db.set_setting("ytm_cookies_enc", previous)
-            return render(request, "settings.html", settings_ctx(s, yt_error=str(exc)), 400)
+            return render(request, "settings.html", settings_ctx(request, s, yt_error=str(exc)), 400)
         db.set_setting("ytm_cookies_saved_at", str(time.time()))
         db.set_setting("ytm_cookies_expiry", str(parsed.earliest_expiry) if parsed.earliest_expiry else None)
         db.log_event("security", "YouTube Music cookies updated")
@@ -717,9 +894,9 @@ def create_app(
         require_csrf(request, s, csrf_token)
         row = user_row(s.user_id)
         if not security.verify_password(row["password_hash"], current[:1024]):
-            return render(request, "settings.html", settings_ctx(s, pw_error="Current password is incorrect."), 400)
+            return render(request, "settings.html", settings_ctx(request, s, pw_error="Current password is incorrect."), 400)
         if error := security.password_problem(new, confirm):
-            return render(request, "settings.html", settings_ctx(s, pw_error=error), 400)
+            return render(request, "settings.html", settings_ctx(request, s, pw_error=error), 400)
         db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (security.hash_password(new), s.user_id))
         sessions.delete_all_for_user(s.user_id, except_hash=s.token_hash)
         db.log_event("security", "Password changed")
@@ -733,7 +910,7 @@ def create_app(
         db.set_setting(f"totp_pending_{s.user_id}", vault.encrypt(secret))
         uri = security.totp_uri(secret, s.username)
         qr = segno.make(uri, error="m").svg_inline(scale=5, dark="#111", light="#fff")
-        return render(request, "settings.html", settings_ctx(s, totp_setup={"secret": secret, "qr": qr}))
+        return render(request, "settings.html", settings_ctx(request, s, totp_setup={"secret": secret, "qr": qr}))
 
     @app.post("/settings/2fa/confirm")
     def settings_2fa_confirm(request: Request, csrf_token: str = Form(""), code: str = Form("")):
@@ -748,7 +925,7 @@ def create_app(
             uri = security.totp_uri(secret, s.username)
             qr = segno.make(uri, error="m").svg_inline(scale=5, dark="#111", light="#fff")
             return render(request, "settings.html", settings_ctx(
-                s, totp_setup={"secret": secret, "qr": qr, "error": "That code didn't work. Try the next one."}), 400)
+                request, s, totp_setup={"secret": secret, "qr": qr, "error": "That code didn't work. Try the next one."}), 400)
         db.execute(
             "UPDATE users SET totp_secret_enc = ?, totp_enabled = 1, totp_last_step = ? WHERE id = ?",
             (enc, step, s.user_id),
@@ -768,7 +945,7 @@ def create_app(
             vault.decrypt(row["totp_secret_enc"]), code, row["totp_last_step"])
         if not step:
             return render(request, "settings.html", settings_ctx(
-                s, totp_error="Enter your password and a current code to turn this off."), 400)
+                request, s, totp_error="Enter your password and a current code to turn this off."), 400)
         db.execute("UPDATE users SET totp_secret_enc = NULL, totp_enabled = 0, totp_last_step = 0 WHERE id = ?",
                    (s.user_id,))
         db.log_event("security", "Two-factor authentication turned off")

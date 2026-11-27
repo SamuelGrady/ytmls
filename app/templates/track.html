@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}{{ t.title }}{% endblock %}
+{% block content %}
+<p class="small"><a href="{{ back if back and back.startswith('/items/') else '/tracks' }}">← Back</a></p>
+<div class="track-head">
+  <img class="cover" src="/covers/{{ t.video_id|urlencode }}" alt="Cover art" width="160" height="160">
+  <div>
+    <h1>{{ t.title }}</h1>
+    <p class="muted">{{ t.artists }}{% if t.album %} · {{ t.album }}{% endif %}</p>
+    {% if t.file_path %}<p><code class="small">{{ t.file_path }}</code></p>{% endif %}
+    {% if items %}<p class="small muted">In: {% for i in items %}<a href="/items/{{ i.id|urlencode }}">{{ i.title }}</a>{{ ', ' if not loop.last }}{% endfor %}</p>{% endif %}
+    {% if t.meta_locked %}<p class="small"><span class="badge">edited</span> Your edits are kept even if YouTube Music changes this track's info.</p>{% endif %}
+  </div>
+</div>
+{% if error %}<p class="notice err">{{ error }}</p>{% endif %}
+<form method="post" action="/tracks/{{ t.video_id|urlencode }}" enctype="multipart/form-data" class="card stack">
+  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+  <label>Title <input name="title" value="{{ t.title }}" required maxlength="300"></label>
+  <label>Artists <input name="artists" value="{{ t.artists or '' }}" maxlength="300"></label>
+  <label>Album <input name="album" value="{{ t.album or '' }}" required maxlength="300"></label>
+  <label>Album artist <input name="album_artist" value="{{ t.album_artist or '' }}" required maxlength="300">
+    <span class="muted small">Jellyfin groups albums by this. The file lives in a folder named after it.</span></label>
+  <div class="row2">
+    <label>Track number <input name="track_number" value="{{ t.track_number or '' }}" inputmode="numeric" pattern="[0-9]{0,3}"></label>
+    <label>Year <input name="year" value="{{ t.year or '' }}" inputmode="numeric" pattern="[0-9]{4}" maxlength="4"></label>
+  </div>
+  <label>New cover art (JPEG or PNG, optional) <input type="file" name="cover" accept="image/jpeg,image/png"></label>
+  {% if t.custom_cover %}<label class="checkbox"><input type="checkbox" name="reset_cover" value="1"> Go back to the cover from YouTube Music</label>{% endif %}
+  <button class="primary">Save</button>
+</form>
+{% endblock %}

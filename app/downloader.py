@@ -65,6 +65,7 @@ def produce_track(
     premium: bool,
     quality: str,
     tmp_root: Path,
+    cover_override: tuple[bytes, str] | None = None,
 ) -> str:
     """Download, encode, tag and atomically place one track. Returns a source description."""
     dest = media.ensure_inside(music_dir, rel_path)
@@ -74,10 +75,12 @@ def produce_track(
         src, desc = downloader.fetch_audio(meta.video_id, workdir, cookies_file, premium)
         encoded = workdir / "out.mp3"
         media.encode_mp3(src, encoded, quality)
-        try:
-            cover = media.fetch_cover(media.big_cover_url(meta.cover_url))
-        except Exception:
-            cover = None
+        cover = cover_override
+        if cover is None:
+            try:
+                cover = media.fetch_cover(media.big_cover_url(meta.cover_url))
+            except Exception:
+                cover = None
         media.write_tags(encoded, meta, cover)
         partial = dest.with_name(dest.name + ".partial")
         # Copy onto the music volume first, then rename, so Jellyfin never sees half a file.

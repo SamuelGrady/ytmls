@@ -11,7 +11,7 @@ YTMLS **only reads** your YouTube Music account. It never likes, adds, removes o
 | 1. Foundation | Container, secure dashboard login, encrypted YouTube cookies, library list with sync checkboxes | Done |
 | 2. Sync engine | Scheduled downloads (every 4 to 6 h), MP3 with tags and cover art, Jellyfin folder layout, `.m3u8` playlists, removals waiting for confirmation, optional Premium quality | Done |
 | 3. Notifications and history | Browser push for new library items, sync summaries and removals waiting for you, plus a full change history | Done |
-| 4. Metadata editor | Edit tags and cover art in the dashboard, optional Jellyfin rescan | Planned |
+| 4. Metadata editor | Edit tags and cover art in the dashboard, optional Jellyfin rescan, security checklist | Done |
 
 Subscribed artists are left out for now.
 
@@ -69,6 +69,18 @@ Open **Settings → Notifications** on each device and press **Turn on for this 
 
 Push notifications need HTTPS, so turn them on while using your Cloudflare Tunnel address. On iPhone or iPad, add YTMLS to your Home Screen first (Share → Add to Home Screen), because Safari only allows web push for installed web apps. Set `YTMLS_VAPID_SUBJECT` to a `mailto:` address or your site URL if you want push services to have a real contact.
 
+## Editing metadata
+
+- **Tracks** lists every downloaded song, with search. Open one to change its title, artists, album, album artist, track number, year or cover art (JPEG or PNG).
+- Saving rewrites the MP3's tags. If the album artist, album, track number or title changed, it also renames or moves the file to match, and updates every playlist file that includes it.
+- On a synced album's page, **Edit album details** changes the album name, album artist, year or cover for every track at once. Use it to fix albums Jellyfin splits or groups wrongly.
+- Edited tracks are marked **edited**, and later syncs never overwrite your changes.
+- Edits wait if a sync is running.
+
+## Jellyfin rescan (optional)
+
+In **Settings → Jellyfin**, enter Jellyfin's address as the container sees it, for example `http://jellyfin:8096` when both are on the same Docker network. Then add an API key from Jellyfin's Dashboard → API Keys. YTMLS tests the connection when you save. Afterwards it asks Jellyfin to rescan shortly after a sync downloads something, after you confirm deletions, and after metadata edits. Bursts of changes are combined into one rescan.
+
 ## History
 
 The **History** page records every change, grouped by day. You can filter it to syncs, library changes, tracks, removals, your sync choices, or account and security events. Each sync can be expanded to show exactly what it downloaded, what changed in each playlist, and what's waiting for removal.
@@ -90,6 +102,8 @@ The dashboard is built to be reachable from the internet, but put more than one 
 - **Turn on 2FA** in Settings right after setup.
 - Set `YTMLS_PUBLIC_URL` to your tunnel address. If you only ever use the tunnel, you can also set `YTMLS_COOKIE_SECURE=true`.
 - If you see "Request blocked", the page explains which check failed. The container log has the details too.
+
+**Settings → Security checklist** shows which of these are in place for the connection you're using right now. That includes whether the request came through Cloudflare Access.
 
 ### What the app itself does
 

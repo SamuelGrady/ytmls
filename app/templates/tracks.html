@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Tracks{% endblock %}
+{% block content %}
+<h1>Tracks</h1>
+<p class="muted small">{{ total }} downloaded track{{ 's' if total != 1 }}. Pick one to edit its tags and cover art.</p>
+<form method="get" action="/tracks" class="toolbar">
+  <input type="search" name="q" value="{{ q }}" placeholder="Search title, artist or album" aria-label="Search tracks">
+  <button>Search</button>
+</form>
+{% if tracks %}
+<ul class="items">
+  {% for t in tracks %}
+  <li class="item"><a class="item-row" href="/tracks/{{ t.video_id|urlencode }}">
+    <img src="/covers/{{ t.video_id|urlencode }}" alt="" loading="lazy" width="48" height="48">
+    <span class="meta"><span class="title">{{ t.title }}{% if t.meta_locked %} <span class="badge">edited</span>{% endif %}</span>
+      <span class="sub muted">{{ t.artists }} · {{ t.album }}{% if t.track_number %} · #{{ t.track_number }}{% endif %}</span></span>
+  </a></li>
+  {% endfor %}
+</ul>
+{% if pages > 1 %}
+<p class="pager">
+  {% if page > 1 %}<a href="/tracks?q={{ q|urlencode }}&amp;page={{ page - 1 }}">← Previous</a>{% endif %}
+  <span class="muted">Page {{ page }} of {{ pages }}</span>
+  {% if page < pages %}<a href="/tracks?q={{ q|urlencode }}&amp;page={{ page + 1 }}">Next →</a>{% endif %}
+</p>
+{% endif %}
+{% else %}
+<p class="muted">{% if q %}No tracks match.{% else %}No tracks downloaded yet.{% endif %}</p>
+{% endif %}
+{% endblock %}
