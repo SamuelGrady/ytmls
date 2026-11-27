@@ -48,6 +48,9 @@ DEFAULTS = {
 LOOSE_RELEASES = {"single", "none"}
 # When a song reaches us through several releases, the most album-like one wins.
 RELEASE_RANK = {"none": 0, "single": 1, "ep": 2, "album": 3}
+# Tag layout written by this version. 1: one value per artist (ARTIST, ALBUMARTIST,
+# ARTISTS, ALBUMARTISTS), and the artist folder named after the first album artist.
+TAGS_REV = 1
 
 
 def release_type(raw: Any) -> str:
@@ -58,6 +61,14 @@ def release_type(raw: Any) -> str:
     if value == "ep":
         return "ep"
     return "album"
+
+
+def parse_names(raw: str | None) -> list[str]:
+    try:
+        value = json.loads(raw) if raw else []
+    except ValueError:
+        return []
+    return [str(v) for v in value if v] if isinstance(value, list) else []
 
 
 def get_option(db: Database, key: str) -> str:
@@ -78,6 +89,7 @@ class SyncSummary:
     removals_queued: list[str] = field(default_factory=list)
     removals_cancelled: int = 0
     relocated: int = 0
+    retagged: int = 0
     playlists_written: int = 0
     errors: list[str] = field(default_factory=list)
 
@@ -116,6 +128,8 @@ class SyncSummary:
             parts.append(f"{len(self.failed)} failed")
         if self.relocated:
             parts.append(f"{self.relocated} moved")
+        if self.retagged:
+            parts.append(f"{self.retagged} retagged")
         if self.deferred:
             parts.append(f"{self.deferred} left for next run")
         if self.removals_queued:
@@ -214,7 +228,7 @@ class SyncEngine:
             problem = media.folder_problem(self.music_dir)
             if problem:
                 raise RuntimeError(problem)
-            summary.relocated = self._apply_layout()
+            summary.relocated, summary.retagged = self._apply_layout()
             latest, latest_gen = self.cookies.load()
             if latest is None or latest_gen != gen:
                 raise RuntimeError("The YouTube Music cookies were changed during the sync; run it again.")
@@ -318,16 +332,19 @@ class SyncEngine:
         album = self._album(source, browse_id, force=True)
         if not album:
             raise RuntimeError("album could not be read")
-        album_artist = ", ".join(album["artists"]) or "Various Artists"
+        album_names = media.clean_names(album["artists"]) or ["Various Artists"]
+        album_artist = ", ".join(album_names)
         out = []
         for t in album["tracks"]:
             if not t.get("videoId") or t.get("isAvailable") is False:
                 continue
+            names = media.clean_names(t.get("artists")) or album_names
             out.append((TrackMeta(
                 video_id=t["videoId"], title=t.get("title") or t["videoId"],
-                artists=", ".join(t.get("artists") or []) or album_artist,
+                artists=", ".join(names),
                 album=album.get("title") or "Unknown Album", album_artist=album_artist,
                 track_number=t.get("trackNumber") or None, year=album.get("year"), cover_url=album.get("cover"),
+                artist_names=names, album_artist_names=album_names,
             ), t.get("duration"), album.get("type") or "album"))
         return out
 
@@ -339,45 +356,64 @@ class SyncEngine:
             if not vid or t.get("isAvailable") is False:
                 continue
             title = t.get("title") or vid
-            artists = ", ".join(a.get("name") for a in t.get("artists") or [] if a.get("name")) or "Unknown Artist"
+            names = media.clean_names([a.get("name") for a in t.get("artists") or []]) or ["Unknown Artist"]
+            artists = ", ".join(names)
             album_ref = t.get("album") or {}
             album = self._album(source, album_ref["id"]) if album_ref.get("id") else None
             if album:
-                album_artist = ", ".join(album["artists"]) or artists
+                album_names = media.clean_names(album["artists"]) or names
                 match = next((x for x in album["tracks"] if x.get("videoId") == vid), None) or next(
                     (x for x in album["tracks"] if (x.get("title") or "").casefold() == title.casefold()), None)
                 meta = TrackMeta(vid, title, artists, album.get("title") or album_ref.get("name") or title,
-                                 album_artist, (match or {}).get("trackNumber") or None, album.get("year"),
-                                 album.get("cover") or thumb_url(t))
+                                 ", ".join(album_names), (match or {}).get("trackNumber") or None, album.get("year"),
+                                 album.get("cover") or thumb_url(t),
+                                 artist_names=names, album_artist_names=album_names)
                 release = album.get("type") or "album"
             else:
-                # No album (music video or upload): file it as a single.
-                first_artist = (t.get("artists") or [{}])[0].get("name") or artists
-                meta = TrackMeta(vid, title, artists, album_ref.get("name") or title, first_artist,
-                                 None, None, thumb_url(t))
+                # No album (music video or upload): file it as a single, under its first artist.
+                meta = TrackMeta(vid, title, artists, album_ref.get("name") or title, names[0],
+                                 None, None, thumb_url(t), artist_names=names, album_artist_names=names[:1])
                 release = "none"
             out.append((meta, t.get("duration_seconds"), release))
         return out
 
     def _upsert_track(self, meta: TrackMeta, duration: int | None) -> None:
         now = time.time()
-        row = self.db.one("SELECT status, meta_locked FROM tracks WHERE video_id = ?", (meta.video_id,))
+        row = self.db.one("SELECT status, meta_locked, artists, album_artist, artist_names, album_artist_names "
+                          "FROM tracks WHERE video_id = ?", (meta.video_id,))
+        names, album_names = json.dumps(meta.artist_list()), json.dumps(meta.album_artist_list())
         if row is None:
             self.db.execute(
                 "INSERT INTO tracks(video_id, title, artists, album, album_artist, track_number, year, duration, "
-                "cover_url, status, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+                "cover_url, status, updated_at, artist_names, album_artist_names, tags_rev) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
                 (meta.video_id, meta.title, meta.artists, meta.album, meta.album_artist, meta.track_number,
-                 meta.year, duration, meta.cover_url, now),
+                 meta.year, duration, meta.cover_url, now, names, album_names, TAGS_REV),
             )
         elif row["status"] != "downloaded" and not row["meta_locked"]:
             # Downloaded files keep the metadata they were written with, and tracks you
             # edited in the dashboard keep your edits.
             self.db.execute(
                 "UPDATE tracks SET title = ?, artists = ?, album = ?, album_artist = ?, track_number = ?, "
-                "year = ?, duration = ?, cover_url = ?, updated_at = ? WHERE video_id = ?",
+                "year = ?, duration = ?, cover_url = ?, updated_at = ?, artist_names = ?, album_artist_names = ?, "
+                "tags_rev = ? WHERE video_id = ?",
                 (meta.title, meta.artists, meta.album, meta.album_artist, meta.track_number, meta.year,
-                 duration, meta.cover_url, now, meta.video_id),
+                 duration, meta.cover_url, now, names, album_names, TAGS_REV, meta.video_id),
             )
+        else:
+            # Files from before artists were kept one by one: learn the separate names,
+            # but only where they spell the same thing the file already has (so your
+            # edits and the file's metadata stay as they are).
+            sets: dict[str, str] = {}
+            if row["artist_names"] is None:
+                sets["artist_names"] = names if row["artists"] == meta.artists else json.dumps(
+                    [row["artists"]] if row["artists"] else [])
+            if row["album_artist_names"] is None:
+                sets["album_artist_names"] = album_names if row["album_artist"] == meta.album_artist else json.dumps(
+                    [row["album_artist"]] if row["album_artist"] else [])
+            if sets:
+                self.db.execute(f"UPDATE tracks SET {', '.join(f'{k} = ?' for k in sets)} WHERE video_id = ?",
+                                (*sets.values(), meta.video_id))
 
     def _update_memberships(self, source: LibrarySource, summary: SyncSummary) -> None:
         items = self.db.all(
@@ -591,29 +627,37 @@ class SyncEngine:
             album_members is not None and t["video_id"] not in album_members)
         return TrackMeta(t["video_id"], t["title"], t["artists"] or "", t["album"] or t["title"],
                          t["album_artist"] or t["artists"] or "Unknown Artist", t["track_number"],
-                         t["year"], t["cover_url"], loose=loose)
+                         t["year"], t["cover_url"], loose=loose,
+                         artist_names=parse_names(t["artist_names"]),
+                         album_artist_names=parse_names(t["album_artist_names"]))
 
     def place_artist_nfo(self, rel: Path, meta: TrackMeta) -> None:
         if meta.loose:
-            media.ensure_artist_nfo(self.music_dir, rel.parent, meta.album_artist)
+            media.ensure_artist_nfo(self.music_dir, rel.parent, meta.folder_artist)
 
     def relayout(self) -> int:
-        """Move existing files to match the singles setting. Raises SyncBusy during a sync."""
+        """Move existing files to match the settings. Raises SyncBusy during a sync."""
         with self.exclusive():
-            moved = self._apply_layout()
+            moved, _ = self._apply_layout()
             if moved:
                 self.rewrite_playlists()
         return moved
 
-    def _apply_layout(self) -> int:
-        """Move downloaded songs in or out of their album folders to match the settings.
+    def _apply_layout(self) -> tuple[int, int]:
+        """Bring downloaded files in line with the settings and the artist layout.
 
-        Retags as it goes (album tag and track number off for loose songs, back on
-        otherwise) and leaves your cover art alone. Returns how many files moved.
+        - Songs move in or out of their album folders to match the singles and
+          incomplete-album settings (album tag and track number off for loose songs,
+          back on otherwise).
+        - Songs filed under a joined "A, B" artist folder move to the first album
+          artist's folder, and files with several artists get one tag value per
+          artist so Jellyfin splits them.
+
+        Your cover art stays as it is. Returns (files moved, files only retagged).
         """
         rules = self._layout_rules()
         wanted = self.wanted()
-        moved = to_loose = 0
+        moved = to_loose = refoldered = retagged = 0
         touched: set[Path] = set()
         for t in self.db.all("SELECT * FROM tracks WHERE status = 'downloaded' AND file_path IS NOT NULL"):
             if t["video_id"] not in wanted:
@@ -621,9 +665,23 @@ class SyncEngine:
             meta = self.meta_for(t, rules)
             current = Path(t["file_path"])
             is_loose = len(current.parts) == 2
-            if meta.loose == is_loose:
+            names_known = t["artist_names"] is not None and t["album_artist_names"] is not None
+            old_tags = names_known and (t["tags_rev"] or 0) < TAGS_REV
+            wrong_folder = current.parts[0] != media.safe_name(meta.folder_artist, "Unknown Artist")
+            needs_move = meta.loose != is_loose or wrong_folder
+            needs_tags = old_tags and (len(meta.artist_list()) > 1 or len(meta.album_artist_list()) > 1)
+            if not needs_move:
                 if meta.loose:
                     self.place_artist_nfo(current, meta)
+                if needs_tags:
+                    try:
+                        media.retag(media.ensure_inside(self.music_dir, current), meta)
+                    except Exception as exc:  # a damaged file must not stop the run
+                        log.warning("Could not retag %s: %s", t["file_path"], exc)
+                        continue
+                    retagged += 1
+                if old_tags:
+                    self.db.execute("UPDATE tracks SET tags_rev = ? WHERE video_id = ?", (TAGS_REV, t["video_id"]))
                 continue
             try:
                 src = media.ensure_inside(self.music_dir, current)
@@ -632,15 +690,19 @@ class SyncEngine:
                 target = self._target_path(meta, current.suffix)
                 media.retag(src, meta)
                 media.move_track(self.music_dir, t["file_path"], target)
-            except (OSError, ValueError) as exc:
+            except Exception as exc:
                 log.warning("Could not move %s: %s", t["file_path"], exc)
                 continue
             self.place_artist_nfo(target, meta)
-            self.db.execute("UPDATE tracks SET file_path = ?, updated_at = ? WHERE video_id = ?",
-                            (target.as_posix(), time.time(), t["video_id"]))
+            self.db.execute("UPDATE tracks SET file_path = ?, updated_at = ?, tags_rev = ? WHERE video_id = ?",
+                            (target.as_posix(), time.time(), TAGS_REV if names_known else t["tags_rev"],
+                             t["video_id"]))
             touched.add(Path(current.parts[0]))
             moved += 1
-            to_loose += meta.loose
+            if meta.loose != is_loose:
+                to_loose += meta.loose
+            else:
+                refoldered += 1
         for artist_dir in touched:
             try:
                 media.remove_our_nfo_if_unneeded(self.music_dir, artist_dir)
@@ -649,11 +711,16 @@ class SyncEngine:
         parts = []
         if to_loose:
             parts.append(f"{to_loose} into their artist folders")
-        if moved - to_loose:
-            parts.append(f"{moved - to_loose} into album folders")
+        if moved - to_loose - refoldered:
+            parts.append(f"{moved - to_loose - refoldered} into album folders")
+        if refoldered:
+            parts.append(f"{refoldered} into their first artist's folder")
         if parts:
             self.db.log_event("layout", f"Moved {moved} song{'s' if moved != 1 else ''}: {', '.join(parts)}")
-        return moved
+        if retagged:
+            self.db.log_event("layout", f"Rewrote the artist tags of {retagged} song{'s' if retagged != 1 else ''} "
+                                        "so Jellyfin sees each artist")
+        return moved, retagged
 
     def _target_path(self, meta: TrackMeta, suffix: str) -> Path:
         rel = media.track_relpath(meta, suffix)
@@ -722,8 +789,8 @@ class SyncEngine:
                         log.warning("Could not write artist.nfo for %s: %s", rel, exc)
                     self.db.execute(
                         "UPDATE tracks SET status = 'downloaded', file_path = ?, error = NULL, attempts = 0, "
-                        "downloaded_at = ?, updated_at = ? WHERE video_id = ?",
-                        (rel.as_posix(), time.time(), time.time(), t["video_id"]))
+                        "downloaded_at = ?, updated_at = ?, tags_rev = ? WHERE video_id = ?",
+                        (rel.as_posix(), time.time(), time.time(), TAGS_REV, t["video_id"]))
                     summary.downloaded += 1
                     summary.downloaded_titles.append(t["title"])
                 if delay and n < len(todo):

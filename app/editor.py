@@ -16,11 +16,14 @@ from pathlib import Path
 
 from . import media
 from .db import Database
-from .sync import SyncEngine
+from .sync import TAGS_REV, SyncEngine, parse_names
 
 MAX_COVER_BYTES = 10 * 1024 * 1024  # keep in step with main.MAX_COVER_UPLOAD
 FIELDS = ("title", "artists", "album", "album_artist", "track_number", "year")
 LIMITS = {"title": 300, "artists": 300, "album": 300, "album_artist": 300, "year": 10}
+# Artist fields are typed as a list split by ";" and stored both ways: the display
+# string ("A, B") and one name per artist, which is what goes into the tags.
+NAME_FIELDS = {"artists": "artist_names", "album_artist": "album_artist_names"}
 
 
 class EditError(ValueError):
@@ -57,7 +60,12 @@ def clean_fields(raw: dict[str, str], only: tuple[str, ...] = FIELDS) -> dict[st
                 raise EditError(f"{key.replace('_', ' ').capitalize()} is too long.")
             if any(ord(c) < 32 for c in value):
                 raise EditError("Text can't contain control characters.")
-            out[key] = value
+            if key in NAME_FIELDS:
+                names = media.split_names(value)
+                out[key] = ", ".join(names)
+                out[NAME_FIELDS[key]] = names
+            else:
+                out[key] = value
     return out
 
 
@@ -93,8 +101,17 @@ class MetadataEditor:
         row = self.db.one("SELECT * FROM tracks WHERE video_id = ?", (video_id,))
         if row is None:
             raise EditError("Track not found.")
-        changed = [k for k, v in fields.items() if row[k] != v]
+        changed = []
         updates = dict(fields)
+        for key, value in fields.items():
+            if key in NAME_FIELDS.values():
+                display = next(k for k, v in NAME_FIELDS.items() if v == key)
+                before = parse_names(row[key]) or ([row[display]] if row[display] else [])
+                updates[key] = json.dumps(value)
+                if before != value and display not in changed:
+                    changed.append(display)
+            elif row[key] != value and key not in changed:
+                changed.append(key)
         custom_cover = row["custom_cover"]
         if cover is not None:
             custom_cover = self._save_cover(video_id, *cover)
@@ -107,8 +124,8 @@ class MetadataEditor:
             return EditResult([])
         updates["custom_cover"] = custom_cover
         sets = ", ".join(f"{k} = ?" for k in updates)
-        self.db.execute(f"UPDATE tracks SET {sets}, meta_locked = 1, updated_at = ? WHERE video_id = ?",
-                        (*updates.values(), time.time(), video_id))
+        self.db.execute(f"UPDATE tracks SET {sets}, meta_locked = 1, updated_at = ?, tags_rev = ? WHERE video_id = ?",
+                        (*updates.values(), time.time(), TAGS_REV, video_id))
 
         result = EditResult(changed)
         new = self.db.one("SELECT * FROM tracks WHERE video_id = ?", (video_id,))

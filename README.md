@@ -47,7 +47,9 @@ After that YTMLS keeps the session alive on its own. It saves the refreshed cook
   3. Downloads anything missing.
   4. Writes the playlist files.
 - New songs added to a checked playlist are downloaded automatically.
-- **Files:** `Album Artist/Album/NN - Title.opus` in your music folder (`.m4a` when the stream is AAC), with title, artists, album artist, album, track number, year and cover art embedded. Songs without an album, such as music videos, are filed as singles: `Artist/Title/Title.opus`. Turn on **Keep singles out of Jellyfin's Albums** in Settings to save singles (releases YouTube Music lists as a Single, plus songs with no album) as `Artist/Title.opus` with no album tag instead, so they don't each show up as an album in Jellyfin. YTMLS then also writes a small `artist.nfo` in those artist folders, because Jellyfin otherwise treats a folder of loose songs as one album. **Hide incomplete albums** does the same for songs that only come from your playlists and whose album you don't sync, so Jellyfin doesn't show a one- or two-song album for them. Sync that album later and its songs move into a full album folder.
+- **Files:** `Album Artist/Album/NN - Title.opus` in your music folder (`.m4a` when the stream is AAC), with title, artists, album artist, album, track number, year and cover art embedded.
+- **Several artists:** a song or album by more than one artist is filed under the first album artist's folder (`Artist A/…`, never `Artist A, Artist B/…`). Every artist is written as a separate tag value (separate `ARTIST`/`ALBUMARTIST` entries in `.opus`, null-separated `TPE1`/`TPE2` in `.mp3`, one value per artist in `.m4a`, plus `ARTISTS`/`ALBUMARTISTS`), so Jellyfin lists the song under each artist without any delimiter settings. Files from older versions are moved and retagged on the next sync, without downloading them again; files waiting for your OK to remove stay where they are.
+- Songs without an album, such as music videos, are filed as singles: `Artist/Title/Title.opus`. Turn on **Keep singles out of Jellyfin's Albums** in Settings to save singles (releases YouTube Music lists as a Single, plus songs with no album) as `Artist/Title.opus` with no album tag instead, so they don't each show up as an album in Jellyfin. YTMLS then also writes a small `artist.nfo` in those artist folders, because Jellyfin otherwise treats a folder of loose songs as one album. **Hide incomplete albums** does the same for songs that only come from your playlists and whose album you don't sync, so Jellyfin doesn't show a one- or two-song album for them. Sync that album later and its songs move into a full album folder.
 - **Playlists:** each checked playlist becomes `Playlists/<name>.m3u8`, which points at the album files. A song that's in several playlists is stored only once.
 - **Removals never happen on their own.** These all add a request to the **Removals** page:
   - a song leaves a playlist
@@ -76,7 +78,7 @@ Push notifications need HTTPS, so turn them on while using your Cloudflare Tunne
 
 ## Editing metadata
 
-- **Tracks** lists every downloaded song, with search. Open one to change its title, artists, album, album artist, track number, year or cover art (JPEG or PNG).
+- **Tracks** lists every downloaded song, with search. Open one to change its title, artists, album, album artist, track number, year or cover art (JPEG or PNG). Separate several artists with `;` (a comma stays part of a name, as in Tyler, The Creator).
 - Saving rewrites the file's tags. If the album artist, album, track number or title changed, it also renames or moves the file to match, and updates every playlist file that includes it.
 - On a synced album's page, **Edit album details** changes the album name, album artist, year or cover for every track at once. Use it to fix albums Jellyfin splits or groups wrongly.
 - Edited tracks are marked **edited**, and later syncs never overwrite your changes.

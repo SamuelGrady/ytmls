@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import unicodedata
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from mutagen.flac import Picture
@@ -29,6 +29,8 @@ CONTAINERS = {
 AUDIO_SUFFIXES = {".opus", ".m4a", ".mp3"}
 DEFAULT_SUFFIX = ".opus"
 MP4_VIDEO_ID = "----:com.apple.iTunes:YouTube Video ID"
+MP4_ARTISTS = "----:com.apple.iTunes:ARTISTS"
+MP4_ALBUM_ARTISTS = "----:com.apple.iTunes:ALBUMARTISTS"
 MAX_COVER_BYTES = 10 * 1024 * 1024
 PLAYLIST_DIR = "Playlists"
 ARTIST_NFO = "artist.nfo"
@@ -49,6 +51,40 @@ class TrackMeta:
     cover_url: str | None
     # Kept out of Jellyfin's albums: stored as Artist/Title.opus with no album tag.
     loose: bool = False
+    # Each artist on their own. ``artists`` and ``album_artist`` are the display
+    # strings ("A, B"); these lists are what goes into the tags, one value per
+    # artist, so Jellyfin sees A and B rather than one artist called "A, B".
+    artist_names: list[str] = field(default_factory=list)
+    album_artist_names: list[str] = field(default_factory=list)
+
+    def artist_list(self) -> list[str]:
+        if self.artist_names:
+            return self.artist_names
+        return [self.artists] if self.artists else self.album_artist_list()
+
+    def album_artist_list(self) -> list[str]:
+        return self.album_artist_names or ([self.album_artist] if self.album_artist else [])
+
+    @property
+    def folder_artist(self) -> str:
+        """The artist folder: the first album artist, never a joined "A, B"."""
+        names = self.album_artist_list()
+        return names[0] if names else ""
+
+
+def split_names(text: str | None) -> list[str]:
+    """Split a typed list of artists on ";" (names like "Tyler, The Creator" keep their comma)."""
+    return clean_names((text or "").split(";"))
+
+
+def clean_names(names: list[str] | None) -> list[str]:
+    """Trim names and drop blanks and repeats, keeping the order."""
+    out: list[str] = []
+    for name in names or []:
+        name = (name or "").strip()
+        if name and name.casefold() not in {x.casefold() for x in out}:
+            out.append(name)
+    return out
 
 
 def folder_problem(music_dir: Path) -> str | None:
@@ -109,7 +145,7 @@ def track_relpath(meta: TrackMeta, suffix: str = DEFAULT_SUFFIX) -> Path:
     Loose tracks (singles, when that setting is on) go straight into the artist
     folder as Album Artist/Title.opus. ``suffix`` is the file's audio format.
     """
-    artist_dir = safe_name(meta.album_artist, "Unknown Artist")
+    artist_dir = safe_name(meta.folder_artist, "Unknown Artist")
     stem = safe_name(meta.title, meta.video_id)
     if meta.loose:
         return Path(artist_dir) / f"{stem}{suffix}"
@@ -200,8 +236,11 @@ def write_tags(path: Path, meta: TrackMeta, cover: tuple[bytes, str] | None) -> 
 def _write_id3(path: Path, meta: TrackMeta, cover: tuple[bytes, str] | None) -> None:
     tags = ID3()  # saving a fresh tag replaces whatever was there
     tags.add(TIT2(encoding=3, text=meta.title))
-    tags.add(TPE1(encoding=3, text=meta.artists or meta.album_artist))
-    tags.add(TPE2(encoding=3, text=meta.album_artist))
+    # Several values in one frame, split by a null character: Jellyfin reads each as an artist.
+    tags.add(TPE1(encoding=3, text=meta.artist_list()))
+    tags.add(TPE2(encoding=3, text=meta.album_artist_list()))
+    tags.add(TXXX(encoding=3, desc="ARTISTS", text=meta.artist_list()))
+    tags.add(TXXX(encoding=3, desc="ALBUMARTISTS", text=meta.album_artist_list()))
     if not meta.loose:
         tags.add(TALB(encoding=3, text=meta.album))
         if meta.track_number:
@@ -213,7 +252,9 @@ def _write_id3(path: Path, meta: TrackMeta, cover: tuple[bytes, str] | None) -> 
     if cover:
         data, mime = cover
         tags.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=data))
-    tags.save(str(path), v2_version=3)
+    # v2.3 for the widest player support; v23_sep=None keeps multiple values
+    # null-separated (the v2.4 way, which Jellyfin also reads in v2.3) instead of "A/B".
+    tags.save(str(path), v2_version=3, v23_sep=None)
 
 
 def _write_vorbis(path: Path, meta: TrackMeta, cover: tuple[bytes, str] | None) -> None:
@@ -222,8 +263,11 @@ def _write_vorbis(path: Path, meta: TrackMeta, cover: tuple[bytes, str] | None) 
         audio.add_tags()
     audio.tags.clear()
     audio["TITLE"] = meta.title
-    audio["ARTIST"] = meta.artists or meta.album_artist
-    audio["ALBUMARTIST"] = meta.album_artist
+    # One ARTIST field per artist is how Vorbis comments hold several artists.
+    audio["ARTIST"] = meta.artist_list()
+    audio["ALBUMARTIST"] = meta.album_artist_list()
+    audio["ARTISTS"] = meta.artist_list()
+    audio["ALBUMARTISTS"] = meta.album_artist_list()
     if not meta.loose:
         audio["ALBUM"] = meta.album
         if meta.track_number:
@@ -248,8 +292,11 @@ def _write_mp4(path: Path, meta: TrackMeta, cover: tuple[bytes, str] | None) -> 
         audio.add_tags()
     audio.tags.clear()
     audio["\xa9nam"] = [meta.title]
-    audio["\xa9ART"] = [meta.artists or meta.album_artist]
-    audio["aART"] = [meta.album_artist]
+    # Each value becomes its own data atom, which Jellyfin reads as separate artists.
+    audio["\xa9ART"] = meta.artist_list()
+    audio["aART"] = meta.album_artist_list()
+    audio[MP4_ARTISTS] = [MP4FreeForm(a.encode("utf-8")) for a in meta.artist_list()]
+    audio[MP4_ALBUM_ARTISTS] = [MP4FreeForm(a.encode("utf-8")) for a in meta.album_artist_list()]
     if not meta.loose:
         audio["\xa9alb"] = [meta.album]
         if meta.track_number:

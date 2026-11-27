@@ -26,7 +26,7 @@ from .library import refresh_library
 from .notify import Notifier
 from .editor import EditError, MetadataEditor
 from .jellyfin import Jellyfin, JellyfinError
-from .sync import DEFAULTS, Scheduler, SyncBusy, SyncEngine, SyncSummary, get_option
+from .sync import DEFAULTS, Scheduler, SyncBusy, SyncEngine, SyncSummary, get_option, parse_names
 from .security import LoginThrottle, Session, SessionStore, Vault
 from .ytauth import CookieStore
 from .ytm import CookieError, LibrarySource, ReadOnlyYTMusic, parse_cookies
@@ -112,6 +112,8 @@ def create_app(
     ytm_factory = ytm_factory or ReadOnlyYTMusic
     templates = Jinja2Templates(directory=str(BASE / "templates"))
     templates.env.filters["ago"] = _ago
+    # An artist field as typed in the editor: one name per artist, split by ";".
+    templates.env.filters["names"] = lambda raw, fallback=None: "; ".join(parse_names(raw)) or fallback or ""
     templates.env.filters["until"] = lambda ts: _until(ts) or ""
     templates.env.filters["clock"] = lambda ts: time.strftime("%H:%M", time.localtime(ts))
     templates.env.filters["datetime"] = lambda ts: time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
@@ -129,7 +131,7 @@ def create_app(
     editor = MetadataEditor(db, engine, settings.music_dir)
 
     def after_sync(status: str, summary: SyncSummary, error: str | None) -> None:
-        if (summary.downloaded or summary.relocated) and db.get_setting("jellyfin_auto") != "0":
+        if (summary.downloaded or summary.relocated or summary.retagged) and db.get_setting("jellyfin_auto") != "0":
             jellyfin.request_refresh(delay=5)
         notifier.new_library_items(summary.library_new)
         notifier.sync_finished(status, summary.headline(), summary.detail_lines(include_library=False),
@@ -541,8 +543,10 @@ def create_app(
             "JOIN tracks t ON t.video_id = it.video_id WHERE it.item_id = ? "
             "ORDER BY it.removed_at IS NOT NULL, it.position", (item_id,))
         first = next((t for t in tracks if not t["link_removed"]), None)
-        album = {"album": first["album"], "album_artist": first["album_artist"], "year": first["year"]} \
-            if first else {"album": item["title"], "album_artist": item["subtitle"], "year": item["year"]}
+        album = {"album": first["album"], "album_artist": first["album_artist"],
+                 "album_artist_names": first["album_artist_names"], "year": first["year"]} \
+            if first else {"album": item["title"], "album_artist": item["subtitle"], "album_artist_names": None,
+                           "year": item["year"]}
         error = db.get_setting("last_edit_error") if request.query_params.get("error") == "edit" else None
         return render(request, "item.html", {"s": s, "csrf": s.csrf_token, "item": item, "tracks": tracks,
                                              "album": album, "error": error})

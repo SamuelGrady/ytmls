@@ -13,7 +13,8 @@
   <form method="post" action="/items/{{ item.id|urlencode }}/album" enctype="multipart/form-data" class="stack">
     <input type="hidden" name="csrf_token" value="{{ csrf }}">
     <label>Album <input name="album" value="{{ album.album or '' }}" required maxlength="300"></label>
-    <label>Album artist <input name="album_artist" value="{{ album.album_artist or '' }}" required maxlength="300"></label>
+    <label>Album artist <input name="album_artist" value="{{ album.album_artist_names|names(album.album_artist) }}" required maxlength="300">
+      <span class="muted small">Separate several artists with ;. Files go in a folder named after the first one.</span></label>
     <label>Year <input name="year" value="{{ album.year or '' }}" inputmode="numeric" pattern="[0-9]{4}" maxlength="4"></label>
     <label>Cover art (JPEG or PNG, optional) <input type="file" name="cover" accept="image/jpeg,image/png"></label>
     <button class="primary">Save album</button>
