@@ -16,7 +16,6 @@ from pathlib import Path
 
 from . import media
 from .db import Database
-from .media import TrackMeta
 from .sync import SyncEngine
 
 MAX_COVER_BYTES = 10 * 1024 * 1024  # keep in step with main.MAX_COVER_UPLOAD
@@ -114,9 +113,7 @@ class MetadataEditor:
         result = EditResult(changed)
         new = self.db.one("SELECT * FROM tracks WHERE video_id = ?", (video_id,))
         if new["status"] == "downloaded" and new["file_path"]:
-            meta = TrackMeta(new["video_id"], new["title"], new["artists"] or "", new["album"] or new["title"],
-                             new["album_artist"] or new["artists"] or "Unknown Artist", new["track_number"],
-                             new["year"], new["cover_url"])
+            meta = self.engine.meta_for(new)
             path = media.ensure_inside(self.music_dir, Path(new["file_path"]))
             if cover is not None:
                 file_cover = cover
@@ -132,6 +129,7 @@ class MetadataEditor:
             if target.as_posix() != new["file_path"]:
                 target = self.engine.target_path(meta)
                 media.move_track(self.music_dir, new["file_path"], target)
+                self.engine.place_artist_nfo(target, meta)
                 self.db.execute("UPDATE tracks SET file_path = ? WHERE video_id = ?", (target.as_posix(), video_id))
                 result.moved_to = target.as_posix()
         return result

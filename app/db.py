@@ -140,6 +140,10 @@ MIGRATIONS: list[str] = [
     ALTER TABLE tracks ADD COLUMN meta_locked INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE tracks ADD COLUMN custom_cover TEXT;
     """,
+    # 5: release type, so singles can be kept out of Jellyfin's albums
+    """
+    ALTER TABLE tracks ADD COLUMN release_type TEXT;  -- album | ep | single | none (no album at all)
+    """,
 ]
 
 

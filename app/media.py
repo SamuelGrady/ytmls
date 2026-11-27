@@ -22,6 +22,8 @@ MP3_QUALITIES = {
 DEFAULT_QUALITY = "320"
 MAX_COVER_BYTES = 10 * 1024 * 1024
 PLAYLIST_DIR = "Playlists"
+ARTIST_NFO = "artist.nfo"
+NFO_MARKER = "<!-- Written by YTMLS so Jellyfin treats this folder as an artist, not an album. -->"
 
 _ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
@@ -36,6 +38,8 @@ class TrackMeta:
     track_number: int | None
     year: str | None
     cover_url: str | None
+    # Kept out of Jellyfin's albums: stored as Artist/Title.mp3 with no album tag.
+    loose: bool = False
 
 
 def folder_problem(music_dir: Path) -> str | None:
@@ -91,10 +95,16 @@ def safe_name(name: str, fallback: str = "Unknown", max_len: int = 120) -> str:
 
 
 def track_relpath(meta: TrackMeta) -> Path:
-    """Jellyfin's preferred layout: Album Artist/Album/NN - Title.mp3"""
+    """Jellyfin's preferred layout: Album Artist/Album/NN - Title.mp3
+
+    Loose tracks (singles, when that setting is on) go straight into the artist
+    folder as Album Artist/Title.mp3.
+    """
     artist_dir = safe_name(meta.album_artist, "Unknown Artist")
-    album_dir = safe_name(meta.album, "Unknown Album")
     stem = safe_name(meta.title, meta.video_id)
+    if meta.loose:
+        return Path(artist_dir) / f"{stem}.mp3"
+    album_dir = safe_name(meta.album, "Unknown Album")
     if meta.track_number:
         stem = f"{meta.track_number:02d} - {stem}"
     return Path(artist_dir) / album_dir / f"{stem}.mp3"
@@ -144,10 +154,11 @@ def write_tags(path: Path, meta: TrackMeta, cover: tuple[bytes, str] | None) -> 
     tags.add(TIT2(encoding=3, text=meta.title))
     tags.add(TPE1(encoding=3, text=meta.artists or meta.album_artist))
     tags.add(TPE2(encoding=3, text=meta.album_artist))
-    tags.add(TALB(encoding=3, text=meta.album))
-    if meta.track_number:
-        tags.add(TRCK(encoding=3, text=str(meta.track_number)))
-    tags.add(TPOS(encoding=3, text="1"))
+    if not meta.loose:
+        tags.add(TALB(encoding=3, text=meta.album))
+        if meta.track_number:
+            tags.add(TRCK(encoding=3, text=str(meta.track_number)))
+        tags.add(TPOS(encoding=3, text="1"))
     if meta.year:
         tags.add(TDRC(encoding=3, text=str(meta.year)))
     tags.add(TXXX(encoding=3, desc="YouTube Video ID", text=meta.video_id))
@@ -187,14 +198,61 @@ def move_track(music_dir: Path, old_rel: str, new_rel: Path) -> None:
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
     os.replace(src, dest)
-    parent = src.parent
+    prune_empty(music_dir, src.parent)
+
+
+def _is_our_nfo(path: Path) -> bool:
+    try:
+        return NFO_MARKER in path.read_text(encoding="utf-8", errors="ignore")[:2000]
+    except OSError:
+        return False
+
+
+def prune_empty(music_dir: Path, folder: Path) -> None:
+    """Remove folders left empty, walking up towards the music folder.
+
+    A folder holding nothing but the artist.nfo YTMLS wrote counts as empty.
+    """
     root = music_dir.resolve()
+    parent = folder
     while parent != root and parent.is_relative_to(root):
+        nfo = parent / ARTIST_NFO
         try:
+            if [p.name for p in parent.iterdir()] == [ARTIST_NFO] and _is_our_nfo(nfo):
+                nfo.unlink()
             parent.rmdir()
         except OSError:
             break
         parent = parent.parent
+
+
+def ensure_artist_nfo(music_dir: Path, artist_dir: Path, artist: str) -> None:
+    """Make sure Jellyfin reads this folder as an artist.
+
+    Jellyfin turns any folder holding songs into an album, unless it also holds an
+    album folder or an artist.nfo. Without this, an artist you only have singles
+    from would show up in Albums as one album named after the artist.
+    """
+    folder = ensure_inside(music_dir, artist_dir)
+    nfo = folder / ARTIST_NFO
+    if nfo.exists():
+        return
+    folder.mkdir(parents=True, exist_ok=True)
+    name = artist.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    nfo.write_text('<?xml version="1.0" encoding="utf-8" standalone="yes"?>\n'
+                   f"{NFO_MARKER}\n<artist>\n  <name>{name}</name>\n</artist>\n", encoding="utf-8")
+
+
+def remove_our_nfo_if_unneeded(music_dir: Path, artist_dir: Path) -> None:
+    """Drop the artist.nfo YTMLS wrote once no loose songs are left in the folder."""
+    folder = ensure_inside(music_dir, artist_dir)
+    nfo = folder / ARTIST_NFO
+    if not nfo.exists() or not _is_our_nfo(nfo):
+        return
+    if any(p.is_file() and p.suffix.lower() == ".mp3" for p in folder.iterdir()):
+        return
+    nfo.unlink()
+    prune_empty(music_dir, folder)
 
 
 def write_m3u(music_dir: Path, playlist_title: str, playlist_id: str, entries: list[tuple[str, int, str]]) -> Path:
@@ -221,11 +279,4 @@ def remove_file(music_dir: Path, rel: str) -> None:
     full = ensure_inside(music_dir, Path(rel))
     if full.exists():
         full.unlink()
-    parent = full.parent
-    root = music_dir.resolve()
-    while parent != root and parent.is_relative_to(root):
-        try:
-            parent.rmdir()  # only succeeds when empty
-        except OSError:
-            break
-        parent = parent.parent
+    prune_empty(music_dir, full.parent)
