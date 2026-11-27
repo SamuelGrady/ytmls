@@ -190,3 +190,30 @@ def test_security_checklist(authed):
                                               "Cf-Access-Authenticated-User-Email": "me@example.com"}).text
     assert "Use your Cloudflare Tunnel address" not in tunnel
     assert "Add a Cloudflare Access application" not in tunnel
+
+
+def test_large_cover_upload_accepted(synced, authed):
+    """Regression: the global request-size cap used to reject covers over ~576 KB."""
+    big = PNG + b"\x00" * (3 * 1024 * 1024)
+    csrf = csrf_from(authed.get("/tracks/a1").text)
+    data = {"csrf_token": csrf, "title": "First Song", "artists": "Artist A", "album": "Album One",
+            "album_artist": "Artist A", "track_number": "1", "year": "2020"}
+    r = authed.post("/tracks/a1", data=data, files={"cover": ("c.png", io.BytesIO(big), "image/png")},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    f = music(synced) / "Artist A" / "Album One" / "01 - First Song.mp3"
+    assert len(ID3(f).getall("APIC")[0].data) == len(big)
+    csrf = csrf_from(authed.get("/items/MPREb_1").text)
+    r = authed.post("/items/MPREb_1/album", data={"csrf_token": csrf, "album": "Album One",
+                                                  "album_artist": "Artist A", "year": "2020"},
+                    files={"cover": ("c.png", io.BytesIO(big), "image/png")}, follow_redirects=False)
+    assert r.status_code == 303
+
+
+def test_oversized_requests_still_rejected(synced, authed):
+    csrf = csrf_from(authed.get("/tracks/a1").text)
+    huge = PNG + b"\x00" * (11 * 1024 * 1024)
+    r = authed.post("/tracks/a1", data={"csrf_token": csrf}, files={"cover": ("c.png", io.BytesIO(huge), "image/png")})
+    assert r.status_code == 413
+    r = authed.post("/settings/youtube", data={"csrf_token": csrf, "cookies_text": "x" * (2 * 1024 * 1024)})
+    assert r.status_code == 413

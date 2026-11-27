@@ -68,6 +68,19 @@ CSP = (
 )
 
 
+MAX_COVER_UPLOAD = 10 * 1024 * 1024
+FORM_OVERHEAD = 256 * 1024
+
+
+def _body_limit(path: str) -> int:
+    """Largest request body accepted for a path: cover uploads get room for a
+    10 MB image, everything else stays small."""
+    parts = path.strip("/").split("/")
+    is_cover_form = (len(parts) == 2 and parts[0] == "tracks") or (
+        len(parts) == 3 and parts[0] == "items" and parts[2] == "album")
+    return (MAX_COVER_UPLOAD if is_cover_form else MAX_COOKIE_UPLOAD) + FORM_OVERHEAD
+
+
 class LoginRequired(Exception):
     def __init__(self, api: bool):
         self.api = api
@@ -271,7 +284,7 @@ def create_app(
     @app.middleware("http")
     async def headers_mw(request: Request, call_next):
         length = request.headers.get("content-length")
-        if length and length.isdigit() and int(length) > MAX_COOKIE_UPLOAD + 64 * 1024:
+        if length and length.isdigit() and int(length) > _body_limit(request.url.path):
             return Response("Request too large", status_code=413)
         resp = await call_next(request)
         resp.headers["Content-Security-Policy"] = CSP

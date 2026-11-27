@@ -19,7 +19,7 @@ from .db import Database
 from .media import TrackMeta
 from .sync import SyncEngine
 
-MAX_COVER_BYTES = 10 * 1024 * 1024
+MAX_COVER_BYTES = 10 * 1024 * 1024  # keep in step with main.MAX_COVER_UPLOAD
 FIELDS = ("title", "artists", "album", "album_artist", "track_number", "year")
 LIMITS = {"title": 300, "artists": 300, "album": 300, "album_artist": 300, "year": 10}
 
